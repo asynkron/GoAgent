@@ -14,8 +14,16 @@ import (
 
 // main bootstraps the Go translation of the GoAgent runtime.
 func main() {
+	defaultModel := os.Getenv("OPENAI_MODEL")
+	if defaultModel == "" {
+		defaultModel = "gpt-4.1"
+	}
+
+	defaultReasoning := os.Getenv("OPENAI_REASONING_EFFORT")
+
 	var (
-		model              = flag.String("model", "gpt-4.1", "OpenAI model identifier to use for responses")
+		model              = flag.String("model", defaultModel, "OpenAI model identifier to use for responses")
+		reasoningEffort    = flag.String("reasoning-effort", defaultReasoning, "Reasoning effort hint forwarded to OpenAI (low, medium, high)")
 		autoApprove        = flag.Bool("auto-approve", false, "execute plan steps without manual confirmation")
 		noHuman            = flag.Bool("no-human", false, "operate without waiting for user input between passes")
 		promptAugmentation = flag.String("augment", "", "additional system prompt instructions appended after the default prompt")
@@ -42,6 +50,7 @@ func main() {
 	options := runtime.RuntimeOptions{
 		APIKey:              apiKey,
 		Model:               *model,
+		ReasoningEffort:     *reasoningEffort,
 		AutoApprove:         *autoApprove,
 		NoHuman:             *noHuman,
 		SystemPromptAugment: *promptAugmentation,

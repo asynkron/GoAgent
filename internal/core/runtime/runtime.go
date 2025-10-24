@@ -3,6 +3,7 @@ package runtime
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -23,6 +24,12 @@ type Runtime struct {
 	once      sync.Once
 	closeOnce sync.Once
 	closed    chan struct{}
+
+	plan   *PlanManager
+	client *OpenAIClient
+
+	historyMu sync.RWMutex
+	history   []ChatMessage
 }
 
 // NewRuntime configures a new runtime with the provided options.
@@ -32,11 +39,25 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		return nil, err
 	}
 
+	client, err := NewOpenAIClient(options.APIKey, options.Model, options.ReasoningEffort)
+	if err != nil {
+		return nil, err
+	}
+
+	initialHistory := []ChatMessage{{
+		Role:      RoleSystem,
+		Content:   buildSystemPrompt(options.SystemPromptAugment),
+		Timestamp: time.Now(),
+	}}
+
 	rt := &Runtime{
 		options: options,
 		inputs:  make(chan InputEvent, options.InputBuffer),
 		outputs: make(chan RuntimeEvent, options.OutputBuffer),
 		closed:  make(chan struct{}),
+		plan:    NewPlanManager(),
+		client:  client,
+		history: initialHistory,
 	}
 
 	return rt, nil
@@ -208,23 +229,76 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 		Level:   StatusLevelInfo,
 	})
 
-	// The actual AI orchestration is not implemented yet. Instead we echo the
-	// prompt so callers can validate the queue wiring end-to-end. A thin delay
-	// keeps the behaviour similar to the asynchronous TS runtime.
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(150 * time.Millisecond):
+	userMessage := ChatMessage{Role: RoleUser, Content: prompt, Timestamp: time.Now()}
+	r.appendHistory(userMessage)
+
+	plan, toolCall, err := r.client.RequestPlan(ctx, r.historySnapshot())
+	if err != nil {
+		r.emit(RuntimeEvent{
+			Type:    EventTypeError,
+			Message: fmt.Sprintf("Failed to contact OpenAI: %v", err),
+			Level:   StatusLevelError,
+		})
+		r.emit(RuntimeEvent{
+			Type:    EventTypeRequestInput,
+			Message: "You can provide another prompt.",
+			Level:   StatusLevelInfo,
+		})
+		return nil
+	}
+
+	assistantMessage := ChatMessage{
+		Role:      RoleAssistant,
+		Timestamp: time.Now(),
+		ToolCalls: []ToolCall{toolCall},
+	}
+	r.appendHistory(assistantMessage)
+
+	planBytes, err := json.Marshal(plan)
+	if err != nil {
+		r.emit(RuntimeEvent{
+			Type:    EventTypeError,
+			Message: fmt.Sprintf("Failed to encode plan: %v", err),
+			Level:   StatusLevelError,
+		})
+	} else {
+		toolMessage := ChatMessage{
+			Role:       RoleTool,
+			Content:    string(planBytes),
+			ToolCallID: toolCall.ID,
+			Name:       toolCall.Name,
+			Timestamp:  time.Now(),
+		}
+		r.appendHistory(toolMessage)
+	}
+
+	r.plan.Replace(plan.Plan)
+
+	planMetadata := map[string]any{
+		"plan":         plan.Plan,
+		"tool_call_id": toolCall.ID,
+		"tool_name":    toolCall.Name,
 	}
 
 	r.emit(RuntimeEvent{
-		Type:    EventTypeAssistantMessage,
-		Message: fmt.Sprintf("Echo: %s", prompt),
+		Type:    EventTypeStatus,
+		Message: fmt.Sprintf("Received plan with %d step(s).", len(plan.Plan)),
 		Level:   StatusLevelInfo,
+		Metadata: map[string]any{
+			"tool_call_id": toolCall.ID,
+		},
 	})
+
+	r.emit(RuntimeEvent{
+		Type:     EventTypeAssistantMessage,
+		Message:  plan.Message,
+		Level:    StatusLevelInfo,
+		Metadata: planMetadata,
+	})
+
 	r.emit(RuntimeEvent{
 		Type:    EventTypeRequestInput,
-		Message: "You can provide another prompt.",
+		Message: "Awaiting the next instruction.",
 		Level:   StatusLevelInfo,
 	})
 
@@ -320,4 +394,30 @@ func (r *Runtime) close() {
 		close(r.closed)
 		close(r.outputs)
 	})
+}
+
+func (r *Runtime) appendHistory(message ChatMessage) {
+	r.historyMu.Lock()
+	defer r.historyMu.Unlock()
+	r.history = append(r.history, message)
+}
+
+func (r *Runtime) historySnapshot() []ChatMessage {
+	r.historyMu.RLock()
+	defer r.historyMu.RUnlock()
+	copyHistory := make([]ChatMessage, len(r.history))
+	copy(copyHistory, r.history)
+	return copyHistory
+}
+
+const baseSystemPrompt = `You are OpenAgent, an AI software engineer that plans and executes work in a sandboxed environment.
+Always respond by calling the "open-agent" function tool with arguments that conform to the provided JSON schema.
+Explain your reasoning to the user in the "message" field and keep plans actionable, safe, and justified.`
+
+func buildSystemPrompt(augment string) string {
+	prompt := baseSystemPrompt
+	if strings.TrimSpace(augment) != "" {
+		prompt = prompt + "\n\nAdditional host instructions:\n" + strings.TrimSpace(augment)
+	}
+	return prompt
 }
