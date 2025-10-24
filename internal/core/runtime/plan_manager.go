@@ -30,6 +30,7 @@ func (pm *PlanManager) Replace(steps []PlanStep) {
 	pm.order = pm.order[:0]
 	for _, step := range steps {
 		copied := step
+		copied.Executing = false
 		pm.steps[step.ID] = &copied
 		pm.order = append(pm.order, step.ID)
 	}
@@ -44,6 +45,7 @@ func (pm *PlanManager) Snapshot() []PlanStep {
 	for _, id := range pm.order {
 		if step, ok := pm.steps[id]; ok {
 			copied := *step
+			copied.Executing = step.Executing
 			if step.WaitingForID != nil {
 				copied.WaitingForID = append([]string{}, step.WaitingForID...)
 			}
@@ -66,12 +68,12 @@ func (pm *PlanManager) Snapshot() []PlanStep {
 
 // Ready returns the next executable plan step if all dependencies have completed.
 func (pm *PlanManager) Ready() (*PlanStep, bool) {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
 
 	for _, id := range pm.order {
 		step := pm.steps[id]
-		if step == nil || step.Status != PlanPending {
+		if step == nil || step.Status != PlanPending || step.Executing {
 			continue
 		}
 		ready := true
@@ -86,6 +88,7 @@ func (pm *PlanManager) Ready() (*PlanStep, bool) {
 			}
 		}
 		if ready {
+			step.Executing = true
 			copied := *step
 			return &copied, true
 		}
@@ -103,6 +106,7 @@ func (pm *PlanManager) UpdateStatus(id string, status PlanStatus, observation *P
 		return errors.New("plan: unknown step id")
 	}
 	step.Status = status
+	step.Executing = false
 	if observation != nil {
 		step.Observation = observation
 	}
