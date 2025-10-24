@@ -3,295 +3,321 @@ package runtime
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
-// RuntimeOptions control how the Go runtime mirrors the TypeScript agent loop.
-type RuntimeOptions struct {
-	APIKey                   string
-	Model                    string
-	SystemPrompt             string
-	SystemPromptAugmentation string
-	AutoApprove              bool
-	NoHuman                  bool
-	PlanReminderMessage      string
-	NoHumanAutoMessage       string
-	UserPrompt               string
-	Input                    io.Reader
-	Output                   io.Writer
-	Clock                    func() time.Time
-}
-
-// Runtime orchestrates the conversation with OpenAI and shell command execution.
+// Runtime is the Go counterpart to the TypeScript AgentRuntime. It exposes two
+// channels – Inputs and Outputs – that mirror the asynchronous queues used in
+// the original implementation. Inputs receives InputEvents, Outputs surfaces
+// RuntimeEvents.
 type Runtime struct {
-	options      RuntimeOptions
-	client       *OpenAIClient
-	planManager  *PlanManager
-	executor     *CommandExecutor
-	history      []ChatMessage
-	lastToolCall ToolCall
-	reader       *bufio.Reader
-	writer       io.Writer
+	options RuntimeOptions
+
+	inputs  chan InputEvent
+	outputs chan RuntimeEvent
+
+	once      sync.Once
+	closeOnce sync.Once
+	closed    chan struct{}
 }
 
-// NewRuntime wires together the supporting services based on the provided options.
-func NewRuntime(opts RuntimeOptions) (*Runtime, error) {
-	options := opts
-	if options.SystemPrompt == "" {
-		options.SystemPrompt = "You are OpenAgent running inside a Go console application."
-	}
-	if options.PlanReminderMessage == "" {
-		options.PlanReminderMessage = DefaultPlanReminder
-	}
-	if options.NoHumanAutoMessage == "" {
-		options.NoHumanAutoMessage = DefaultNoHumanAutoMessage
-	}
-	if options.UserPrompt == "" {
-		options.UserPrompt = "\n▷ "
-	}
-	if options.Input == nil {
-		options.Input = os.Stdin
-	}
-	if options.Output == nil {
-		options.Output = os.Stdout
-	}
-	if options.Clock == nil {
-		options.Clock = time.Now
-	}
-
-	client, err := NewOpenAIClient(options.APIKey, options.Model)
-	if err != nil {
+// NewRuntime configures a new runtime with the provided options.
+func NewRuntime(options RuntimeOptions) (*Runtime, error) {
+	options.setDefaults()
+	if err := options.validate(); err != nil {
 		return nil, err
 	}
 
-	runtime := &Runtime{
-		options:     options,
-		client:      client,
-		planManager: NewPlanManager(),
-		executor:    NewCommandExecutor(),
-		history:     make([]ChatMessage, 0, 32),
+	rt := &Runtime{
+		options: options,
+		inputs:  make(chan InputEvent, options.InputBuffer),
+		outputs: make(chan RuntimeEvent, options.OutputBuffer),
+		closed:  make(chan struct{}),
 	}
-	return runtime, nil
+
+	return rt, nil
 }
 
-// Run starts the interactive loop until EOF or an explicit exit command.
-func (rt *Runtime) Run(ctx context.Context) error {
-	rt.reader = bufio.NewReader(rt.options.Input)
-	rt.writer = rt.options.Output
+// Inputs exposes the inbound queue so hosts can push messages programmatically.
+func (r *Runtime) Inputs() chan<- InputEvent {
+	return r.inputs
+}
 
-	systemPrompt := rt.options.SystemPrompt
-	if rt.options.SystemPromptAugmentation != "" {
-		systemPrompt = systemPrompt + "\n\n" + rt.options.SystemPromptAugmentation
+// Outputs exposes the outbound queue which delivers RuntimeEvents in order.
+func (r *Runtime) Outputs() <-chan RuntimeEvent {
+	return r.outputs
+}
+
+// SubmitPrompt is a convenience wrapper that enqueues a prompt input.
+func (r *Runtime) SubmitPrompt(prompt string) {
+	r.enqueue(InputEvent{Type: InputTypePrompt, Prompt: prompt})
+}
+
+// Cancel enqueues a cancel request, mirroring the TypeScript runtime API.
+func (r *Runtime) Cancel(reason string) {
+	r.enqueue(InputEvent{Type: InputTypeCancel, Reason: reason})
+}
+
+// Shutdown requests a graceful shutdown of the runtime loop.
+func (r *Runtime) Shutdown(reason string) {
+	r.enqueue(InputEvent{Type: InputTypeShutdown, Reason: reason})
+}
+
+func (r *Runtime) enqueue(evt InputEvent) {
+	select {
+	case <-r.closed:
+		return
+	default:
 	}
-	rt.appendMessage(ChatMessage{Role: RoleSystem, Content: systemPrompt})
 
-	fmt.Fprintln(rt.writer, "OpenAgent Go runtime ready. Type /exit to quit, /plan to inspect the current plan.")
+	select {
+	case r.inputs <- evt:
+	case <-r.closed:
+	}
+}
+
+// Run starts the runtime loop and optionally bridges stdin/stdout to the
+// respective channels so the binary is immediately useful in a terminal.
+func (r *Runtime) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	if !r.options.DisableOutputForwarding {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.forwardOutputs(ctx)
+		}()
+	}
+
+	if !r.options.DisableInputReader {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := r.consumeInput(ctx); err != nil {
+				r.emit(RuntimeEvent{
+					Type:    EventTypeError,
+					Message: err.Error(),
+					Level:   StatusLevelError,
+				})
+			}
+		}()
+	}
+
+	err := r.loop(ctx)
+	cancel()
+	wg.Wait()
+
+	return err
+}
+
+func (r *Runtime) loop(ctx context.Context) error {
+	r.emit(RuntimeEvent{
+		Type:    EventTypeStatus,
+		Message: "Agent runtime started",
+		Level:   StatusLevelInfo,
+	})
+	r.emit(RuntimeEvent{
+		Type:    EventTypeRequestInput,
+		Message: "Enter a prompt to begin.",
+		Level:   StatusLevelInfo,
+	})
 
 	for {
-		executed, err := rt.executePlanIfReady(ctx)
-		if err != nil {
-			return err
-		}
-		if executed {
-			continue
-		}
-
-		if rt.options.NoHuman {
-			message := rt.options.NoHumanAutoMessage
-			if rt.planManager.HasPending() {
-				message = rt.options.PlanReminderMessage
-			}
-			if last := rt.lastUserMessage(); last != nil && last.Content == message {
-				message = ""
-			}
-			if err := rt.queryAssistant(ctx, message); err != nil {
-				return err
-			}
-			continue
-		}
-
-		fmt.Fprint(rt.writer, rt.options.UserPrompt)
-		line, err := rt.reader.ReadString('\n')
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				fmt.Fprintln(rt.writer, "\nGoodbye.")
+		select {
+		case <-ctx.Done():
+			r.emit(RuntimeEvent{
+				Type:    EventTypeStatus,
+				Message: "Context cancelled. Shutting down runtime.",
+				Level:   StatusLevelWarn,
+			})
+			r.close()
+			return ctx.Err()
+		case evt, ok := <-r.inputs:
+			if !ok {
+				r.close()
 				return nil
 			}
-			return fmt.Errorf("runtime: read input: %w", err)
+			if err := r.handleInput(ctx, evt); err != nil {
+				r.emit(RuntimeEvent{
+					Type:    EventTypeError,
+					Message: err.Error(),
+					Level:   StatusLevelError,
+				})
+				r.close()
+				return err
+			}
 		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	}
+}
+
+func (r *Runtime) handleInput(ctx context.Context, evt InputEvent) error {
+	switch evt.Type {
+	case InputTypePrompt:
+		return r.handlePrompt(ctx, evt)
+	case InputTypeCancel:
+		r.emit(RuntimeEvent{
+			Type:    EventTypeStatus,
+			Message: fmt.Sprintf("Cancel requested: %s", strings.TrimSpace(evt.Reason)),
+			Level:   StatusLevelWarn,
+		})
+		r.emit(RuntimeEvent{
+			Type:    EventTypeRequestInput,
+			Message: "Ready for the next instruction.",
+			Level:   StatusLevelInfo,
+		})
+		return nil
+	case InputTypeShutdown:
+		r.emit(RuntimeEvent{
+			Type:    EventTypeStatus,
+			Message: "Shutdown requested. Goodbye!",
+			Level:   StatusLevelInfo,
+		})
+		r.close()
+		return errors.New("runtime shutdown requested")
+	default:
+		return fmt.Errorf("unknown input type: %s", evt.Type)
+	}
+}
+
+func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
+	prompt := strings.TrimSpace(evt.Prompt)
+	if prompt == "" {
+		r.emit(RuntimeEvent{
+			Type:    EventTypeStatus,
+			Message: "Ignoring empty prompt.",
+			Level:   StatusLevelWarn,
+		})
+		r.emit(RuntimeEvent{
+			Type:    EventTypeRequestInput,
+			Message: "Awaiting a non-empty prompt.",
+			Level:   StatusLevelInfo,
+		})
+		return nil
+	}
+
+	r.emit(RuntimeEvent{
+		Type:    EventTypeStatus,
+		Message: fmt.Sprintf("Processing prompt with model %s…", r.options.Model),
+		Level:   StatusLevelInfo,
+	})
+
+	// The actual AI orchestration is not implemented yet. Instead we echo the
+	// prompt so callers can validate the queue wiring end-to-end. A thin delay
+	// keeps the behaviour similar to the asynchronous TS runtime.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	r.emit(RuntimeEvent{
+		Type:    EventTypeAssistantMessage,
+		Message: fmt.Sprintf("Echo: %s", prompt),
+		Level:   StatusLevelInfo,
+	})
+	r.emit(RuntimeEvent{
+		Type:    EventTypeRequestInput,
+		Message: "You can provide another prompt.",
+		Level:   StatusLevelInfo,
+	})
+
+	return nil
+}
+
+func (r *Runtime) consumeInput(ctx context.Context) error {
+	scanner := bufio.NewScanner(r.options.InputReader)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
 		}
-		if strings.EqualFold(line, "/exit") {
-			fmt.Fprintln(rt.writer, "Exiting on request.")
+
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return fmt.Errorf("failed to read input: %w", err)
+			}
+			r.Shutdown("stdin closed")
 			return nil
 		}
-		if strings.EqualFold(line, "/plan") {
-			rt.printPlan()
+
+		line := strings.TrimSpace(scanner.Text())
+		if r.isExitCommand(line) {
+			r.Shutdown("exit command received")
+			return nil
+		}
+
+		if strings.EqualFold(line, "cancel") {
+			r.Cancel("user requested cancel")
 			continue
 		}
-		if strings.EqualFold(line, "/auto") {
-			rt.options.AutoApprove = !rt.options.AutoApprove
-			state := "disabled"
-			if rt.options.AutoApprove {
-				state = "enabled"
+
+		r.SubmitPrompt(line)
+	}
+}
+
+func (r *Runtime) forwardOutputs(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case evt, ok := <-r.outputs:
+			if !ok {
+				return
 			}
-			fmt.Fprintf(rt.writer, "Auto-approve %s.\n", state)
-			continue
-		}
-
-		rt.appendMessage(ChatMessage{Role: RoleUser, Content: line})
-		if err := rt.queryAssistant(ctx, ""); err != nil {
-			return err
+			fmt.Fprintf(r.options.OutputWriter, "[%s] %s\n", evt.Type, evt.Message)
 		}
 	}
 }
 
-func (rt *Runtime) executePlanIfReady(ctx context.Context) (bool, error) {
-	step, ok := rt.planManager.Ready()
-	if !ok {
-		return false, nil
+func (r *Runtime) isExitCommand(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
 	}
-
-	if !rt.options.AutoApprove && !rt.options.NoHuman {
-		fmt.Fprintf(rt.writer, "\nPlan step %s is ready:\n  %s\n  Command: %s\nExecute? [y/N]: ", step.ID, step.Title, step.Command.Run)
-		answer, err := rt.reader.ReadString('\n')
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return false, err
-			}
-			return false, fmt.Errorf("runtime: read approval: %w", err)
+	for _, candidate := range r.options.ExitCommands {
+		if strings.EqualFold(trimmed, candidate) {
+			return true
 		}
-		answer = strings.TrimSpace(strings.ToLower(answer))
-		if answer != "y" && answer != "yes" {
-			fmt.Fprintf(rt.writer, "Skipped plan step %s.\n", step.ID)
-			return true, nil
-		}
-	} else if !rt.options.AutoApprove && rt.options.NoHuman {
-		fmt.Fprintf(rt.writer, "\nNo human available to approve step %s. Requesting updated plan.\n", step.ID)
-		if err := rt.queryAssistant(ctx, rt.options.PlanReminderMessage); err != nil {
-			return true, err
-		}
-		return true, nil
 	}
-
-	fmt.Fprintf(rt.writer, "\nExecuting plan step %s: %s\nCommand: %s\n", step.ID, step.Title, step.Command.Run)
-	observation, err := rt.executor.Execute(ctx, step)
-	status := PlanCompleted
-	if err != nil {
-		status = PlanFailed
-		fmt.Fprintf(rt.writer, "Command error: %v\n", err)
-	} else {
-		fmt.Fprintln(rt.writer, "Command completed successfully.")
-	}
-
-	if updateErr := rt.planManager.UpdateStatus(step.ID, status, &PlanObservation{ObservationForLLM: &observation}); updateErr != nil {
-		return true, updateErr
-	}
-
-	if rt.lastToolCall.ID != "" {
-		payload, encodeErr := BuildToolMessage(observation)
-		if encodeErr == nil {
-			rt.appendMessage(ChatMessage{
-				Role:       RoleTool,
-				Content:    payload,
-				ToolCallID: rt.lastToolCall.ID,
-			})
-		} else {
-			summary := rt.summarizeObservation(step.ID, observation, encodeErr)
-			rt.appendMessage(ChatMessage{Role: RoleUser, Content: summary})
-		}
-	} else {
-		summary := rt.summarizeObservation(step.ID, observation, nil)
-		rt.appendMessage(ChatMessage{Role: RoleUser, Content: summary})
-	}
-
-	if err := rt.queryAssistant(ctx, ""); err != nil {
-		return true, err
-	}
-
-	return true, nil
+	return false
 }
 
-func (rt *Runtime) queryAssistant(ctx context.Context, userMessage string) error {
-	if userMessage != "" {
-		rt.appendMessage(ChatMessage{Role: RoleUser, Content: userMessage})
+func (r *Runtime) emit(evt RuntimeEvent) {
+	select {
+	case <-r.closed:
+		return
+	default:
 	}
-	plan, toolCall, err := rt.client.RequestPlan(ctx, rt.history)
-	if err != nil {
-		return err
-	}
-	rt.lastToolCall = toolCall
-	rt.appendMessage(ChatMessage{
-		Role:      RoleAssistant,
-		Content:   plan.Message,
-		ToolCalls: []ToolCall{toolCall},
-	})
-	rt.planManager.Replace(plan.Plan)
 
-	fmt.Fprintf(rt.writer, "\nAssistant:\n%s\n", plan.Message)
-	if len(plan.Plan) > 0 {
-		fmt.Fprintln(rt.writer, "Current plan:")
-		for _, step := range plan.Plan {
-			fmt.Fprintf(rt.writer, "  [%s] %-9s %s\n", step.ID, step.Status, step.Title)
+	if r.options.EmitTimeout <= 0 {
+		select {
+		case r.outputs <- evt:
+		case <-r.closed:
 		}
-	} else {
-		fmt.Fprintln(rt.writer, "Plan is empty.")
-	}
-	return nil
-}
-
-func (rt *Runtime) summarizeObservation(id string, obs PlanObservationPayload, encodeErr error) string {
-	summary := map[string]any{
-		"step":      id,
-		"stdout":    obs.Stdout,
-		"stderr":    obs.Stderr,
-		"truncated": obs.Truncated,
-	}
-	if obs.ExitCode != nil {
-		summary["exit_code"] = *obs.ExitCode
-	}
-	if encodeErr != nil {
-		summary["encoding_error"] = encodeErr.Error()
-	}
-	data, err := json.MarshalIndent(summary, "", "  ")
-	if err != nil {
-		return fmt.Sprintf("step %s observation: exit=%v", id, obs.ExitCode)
-	}
-	return string(data)
-}
-
-func (rt *Runtime) printPlan() {
-	snapshot := rt.planManager.SortOrder()
-	if len(snapshot) == 0 {
-		fmt.Fprintln(rt.writer, "No plan available.")
 		return
 	}
-	fmt.Fprintln(rt.writer, "Plan snapshot:")
-	for _, step := range snapshot {
-		fmt.Fprintf(rt.writer, "  [%s] %-9s %s\n", step.ID, step.Status, step.Title)
+
+	timer := time.NewTimer(r.options.EmitTimeout)
+	defer timer.Stop()
+
+	select {
+	case r.outputs <- evt:
+	case <-timer.C:
+	case <-r.closed:
 	}
 }
 
-func (rt *Runtime) appendMessage(msg ChatMessage) {
-	if msg.Timestamp.IsZero() {
-		msg.Timestamp = rt.options.Clock()
-	}
-	rt.history = append(rt.history, msg)
-}
-
-func (rt *Runtime) lastUserMessage() *ChatMessage {
-	for i := len(rt.history) - 1; i >= 0; i-- {
-		if rt.history[i].Role == RoleUser {
-			return &rt.history[i]
-		}
-	}
-	return nil
+func (r *Runtime) close() {
+	r.closeOnce.Do(func() {
+		close(r.closed)
+		close(r.outputs)
+	})
 }

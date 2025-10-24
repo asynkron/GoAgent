@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/asynkron/goagent/golang/internal/core/runtime"
+	"github.com/asynkron/goagent/internal/core/runtime"
 )
 
 // main bootstraps the Go translation of the GoAgent runtime.
@@ -28,13 +28,13 @@ func main() {
 	}
 
 	options := runtime.RuntimeOptions{
-		APIKey:                   apiKey,
-		Model:                    *model,
-		AutoApprove:              *autoApprove,
-		NoHuman:                  *noHuman,
-		SystemPromptAugmentation: *promptAugmentation,
-		PlanReminderMessage:      *planReminder,
-		NoHumanAutoMessage:       *autoMessage,
+		APIKey:              apiKey,
+		Model:               *model,
+		AutoApprove:         *autoApprove,
+		NoHuman:             *noHuman,
+		SystemPromptAugment: *promptAugmentation,
+		PlanReminderMessage: *planReminder,
+		NoHumanAutoMessage:  *autoMessage,
 	}
 
 	agent, err := runtime.NewRuntime(options)
