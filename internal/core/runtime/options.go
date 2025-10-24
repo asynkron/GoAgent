@@ -13,6 +13,7 @@ import (
 type RuntimeOptions struct {
 	APIKey              string
 	Model               string
+	ReasoningEffort     string
 	AutoApprove         bool
 	NoHuman             bool
 	SystemPromptAugment string

@@ -17,13 +17,14 @@ import (
 type OpenAIClient struct {
 	apiKey     string
 	model      string
+	reasoning  string
 	httpClient *http.Client
 	tool       schema.ToolDefinition
 	baseURL    string
 }
 
 // NewOpenAIClient configures the client with the provided API key and model identifier.
-func NewOpenAIClient(apiKey, model string) (*OpenAIClient, error) {
+func NewOpenAIClient(apiKey, model, reasoning string) (*OpenAIClient, error) {
 	if apiKey == "" {
 		return nil, errors.New("openai: API key is required")
 	}
@@ -35,8 +36,9 @@ func NewOpenAIClient(apiKey, model string) (*OpenAIClient, error) {
 		return nil, err
 	}
 	return &OpenAIClient{
-		apiKey: apiKey,
-		model:  model,
+		apiKey:    apiKey,
+		model:     model,
+		reasoning: reasoning,
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},
@@ -55,6 +57,10 @@ func (c *OpenAIClient) RequestPlan(ctx context.Context, history []ChatMessage) (
 			Function: functionDefinition{Name: c.tool.Name, Description: c.tool.Description, Parameters: c.tool.Parameters},
 		}},
 		ToolChoice: toolChoice{Type: "function", Function: &toolChoiceFunction{Name: c.tool.Name}},
+	}
+
+	if c.reasoning != "" {
+		payload.Reasoning = &reasoningOptions{Effort: c.reasoning}
 	}
 
 	body, err := json.Marshal(payload)
@@ -145,6 +151,11 @@ type chatCompletionRequest struct {
 	Messages   []chatMessage       `json:"messages"`
 	Tools      []toolSpecification `json:"tools"`
 	ToolChoice toolChoice          `json:"tool_choice"`
+	Reasoning  *reasoningOptions   `json:"reasoning,omitempty"`
+}
+
+type reasoningOptions struct {
+	Effort string `json:"effort"`
 }
 
 type chatMessage struct {
