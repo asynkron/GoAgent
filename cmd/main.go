@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+
+	"github.com/joho/godotenv"
 
 	"github.com/asynkron/goagent/internal/core/runtime"
 )
@@ -20,6 +23,15 @@ func main() {
 		autoMessage        = flag.String("auto-message", "", "auto-response sent when no human is available")
 	)
 	flag.Parse()
+
+	if err := godotenv.Load(); err != nil {
+		// A missing .env file is fine, but other errors should be surfaced to help with debugging.
+		var pathErr *os.PathError
+		if !errors.As(err, &pathErr) {
+			fmt.Fprintf(os.Stderr, "failed to load .env: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {

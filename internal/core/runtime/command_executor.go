@@ -79,7 +79,8 @@ func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObser
 		Plan:      nil,
 	}
 
-	if exitErr := (&exec.ExitError{}); errors.As(runErr, &exitErr) {
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) {
 		code := exitErr.ExitCode()
 		observation.ExitCode = &code
 	} else if runErr == nil {
@@ -87,7 +88,7 @@ func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObser
 		observation.ExitCode = &zero
 	}
 
-	if runErr != nil && !errors.As(runErr, &exec.ExitError{}) {
+	if runErr != nil && exitErr == nil {
 		observation.Details = runErr.Error()
 	}
 
