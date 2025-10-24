@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/asynkron/openagent/golang/internal/core/runtime"
+	"github.com/asynkron/goagent/golang/internal/core/runtime"
 )
 
-// main bootstraps the Go translation of the OpenAgent runtime.
+// main bootstraps the Go translation of the GoAgent runtime.
 func main() {
 	var (
 		model              = flag.String("model", "gpt-4.1", "OpenAI model identifier to use for responses")
