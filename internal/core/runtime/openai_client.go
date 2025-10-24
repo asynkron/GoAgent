@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/asynkron/openagent/golang/internal/core/schema"
+	"github.com/asynkron/goagent/internal/core/schema"
 )
 
 // OpenAIClient wraps the HTTP client required to call the Chat Completions API.
@@ -137,6 +137,9 @@ func buildMessages(history []ChatMessage) []chatMessage {
 	return messages
 }
 
+// chatCompletionRequest and related types are intentionally minimal mirrors of the
+// OpenAI Chat Completions API payloads. They allow us to construct the request
+// without pulling in a heavy client dependency.
 type chatCompletionRequest struct {
 	Model      string              `json:"model"`
 	Messages   []chatMessage       `json:"messages"`
@@ -186,11 +189,8 @@ type toolChoiceFunction struct {
 type chatCompletionResponse struct {
 	Choices []struct {
 		Message struct {
-			Role      string `json:"role"`
-			Content   string `json:"content"`
 			ToolCalls []struct {
 				ID       string `json:"id"`
-				Type     string `json:"type"`
 				Function struct {
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`

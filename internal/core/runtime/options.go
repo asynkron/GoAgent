@@ -1,0 +1,85 @@
+package runtime
+
+import (
+	"errors"
+	"io"
+	"os"
+	"time"
+)
+
+// RuntimeOptions configures the Go runtime wrapper. It mirrors the top level
+// knobs exposed by the TypeScript runtime while keeping room for Go specific
+// ergonomics like injecting alternative readers or writers during tests.
+type RuntimeOptions struct {
+	APIKey              string
+	Model               string
+	AutoApprove         bool
+	NoHuman             bool
+	SystemPromptAugment string
+	PlanReminderMessage string
+	NoHumanAutoMessage  string
+
+	// InputBuffer controls the capacity of the input channel. The default is
+	// tuned for interactive usage where only a handful of messages are
+	// pending at any given time.
+	InputBuffer int
+	// OutputBuffer controls the capacity of the output channel.
+	OutputBuffer int
+
+	// InputReader allows swapping stdin during tests.
+	InputReader io.Reader
+	// OutputWriter can be redirected for tests or alternative hosts.
+	OutputWriter io.Writer
+
+	// DisableInputReader prevents Run from consuming stdin. Useful when the
+	// host application pushes values into the Inputs queue directly.
+	DisableInputReader bool
+	// DisableOutputForwarding prevents Run from printing to stdout and is
+	// helpful when the host listens to Outputs directly.
+	DisableOutputForwarding bool
+
+	// EmitTimeout guards against blocking forever when no consumer drains the
+	// output channel. Zero means wait indefinitely.
+	EmitTimeout time.Duration
+
+	// ExitCommands are matched (case insensitive) by the default input
+	// reader to trigger a graceful shutdown.
+	ExitCommands []string
+}
+
+// setDefaults applies reasonable defaults that match the behaviour of the
+// TypeScript runtime while keeping Go specific knobs optional.
+func (o *RuntimeOptions) setDefaults() {
+	if o.Model == "" {
+		o.Model = "gpt-4.1"
+	}
+	if o.PlanReminderMessage == "" {
+		o.PlanReminderMessage = "Plan is waiting for user input."
+	}
+	if o.NoHumanAutoMessage == "" {
+		o.NoHumanAutoMessage = "No human available to continue."
+	}
+	if o.InputBuffer <= 0 {
+		o.InputBuffer = 4
+	}
+	if o.OutputBuffer <= 0 {
+		o.OutputBuffer = 16
+	}
+	if o.InputReader == nil {
+		o.InputReader = os.Stdin
+	}
+	if o.OutputWriter == nil {
+		o.OutputWriter = os.Stdout
+	}
+	if len(o.ExitCommands) == 0 {
+		o.ExitCommands = []string{"exit", "quit", "/exit", "/quit"}
+	}
+}
+
+// validate performs lightweight validation of user supplied options.
+func (o *RuntimeOptions) validate() error {
+	if o.APIKey == "" {
+		return errors.New("OPENAI_API_KEY is required")
+	}
+	return nil
+}
