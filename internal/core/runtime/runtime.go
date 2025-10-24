@@ -25,8 +25,10 @@ type Runtime struct {
 	closeOnce sync.Once
 	closed    chan struct{}
 
-	plan   *PlanManager
-	client *OpenAIClient
+	plan      *PlanManager
+	client    *OpenAIClient
+	executor  *CommandExecutor
+	commandMu sync.Mutex
 
 	historyMu sync.RWMutex
 	history   []ChatMessage
@@ -51,13 +53,14 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 	}}
 
 	rt := &Runtime{
-		options: options,
-		inputs:  make(chan InputEvent, options.InputBuffer),
-		outputs: make(chan RuntimeEvent, options.OutputBuffer),
-		closed:  make(chan struct{}),
-		plan:    NewPlanManager(),
-		client:  client,
-		history: initialHistory,
+		options:  options,
+		inputs:   make(chan InputEvent, options.InputBuffer),
+		outputs:  make(chan RuntimeEvent, options.OutputBuffer),
+		closed:   make(chan struct{}),
+		plan:     NewPlanManager(),
+		client:   client,
+		executor: NewCommandExecutor(),
+		history:  initialHistory,
 	}
 
 	return rt, nil
@@ -296,13 +299,158 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 		Metadata: planMetadata,
 	})
 
-	r.emit(RuntimeEvent{
-		Type:    EventTypeRequestInput,
-		Message: "Awaiting the next instruction.",
-		Level:   StatusLevelInfo,
-	})
+	if len(plan.Plan) > 0 {
+		go r.executePendingCommands(ctx, toolCall)
+	} else {
+		r.emit(RuntimeEvent{
+			Type:    EventTypeRequestInput,
+			Message: "No plan steps returned. Provide the next instruction.",
+			Level:   StatusLevelInfo,
+		})
+	}
 
 	return nil
+}
+
+func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall) {
+	r.commandMu.Lock()
+	defer r.commandMu.Unlock()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		step, ok := r.plan.Ready()
+		if !ok {
+			if r.plan.HasPending() {
+				reminder := r.options.PlanReminderMessage
+				if strings.TrimSpace(reminder) == "" {
+					reminder = DefaultPlanReminder
+				}
+				r.emit(RuntimeEvent{
+					Type:    EventTypeStatus,
+					Message: reminder,
+					Level:   StatusLevelInfo,
+				})
+				r.emit(RuntimeEvent{
+					Type:    EventTypeRequestInput,
+					Message: reminder,
+					Level:   StatusLevelInfo,
+				})
+			} else {
+				r.emit(RuntimeEvent{
+					Type:    EventTypeStatus,
+					Message: "Plan execution completed.",
+					Level:   StatusLevelInfo,
+				})
+				r.emit(RuntimeEvent{
+					Type:    EventTypeRequestInput,
+					Message: "Plan completed. Provide the next instruction.",
+					Level:   StatusLevelInfo,
+				})
+			}
+			return
+		}
+
+		title := strings.TrimSpace(step.Title)
+		if title == "" {
+			title = step.ID
+		}
+
+		r.emit(RuntimeEvent{
+			Type:    EventTypeStatus,
+			Message: fmt.Sprintf("Executing step %s: %s", step.ID, title),
+			Level:   StatusLevelInfo,
+			Metadata: map[string]any{
+				"step_id": step.ID,
+				"title":   step.Title,
+				"command": step.Command.Run,
+				"shell":   step.Command.Shell,
+				"cwd":     step.Command.Cwd,
+			},
+		})
+
+		observation, err := r.executor.Execute(ctx, *step)
+		if ctx.Err() != nil {
+			return
+		}
+
+		status := PlanCompleted
+		level := StatusLevelInfo
+		message := fmt.Sprintf("Step %s completed successfully.", step.ID)
+		if err != nil {
+			status = PlanFailed
+			level = StatusLevelError
+			if observation.Details == "" && err != nil {
+				observation.Details = err.Error()
+			}
+			message = fmt.Sprintf("Step %s failed: %v", step.ID, err)
+		}
+
+		planObservation := &PlanObservation{ObservationForLLM: &observation}
+		if updateErr := r.plan.UpdateStatus(step.ID, status, planObservation); updateErr != nil {
+			r.emit(RuntimeEvent{
+				Type:    EventTypeError,
+				Message: fmt.Sprintf("Failed to update plan status for step %s: %v", step.ID, updateErr),
+				Level:   StatusLevelError,
+			})
+			return
+		}
+
+		observation.Plan = r.plan.SortOrder()
+
+		if toolCall.ID != "" {
+			if toolMessage, buildErr := BuildToolMessage(observation); buildErr != nil {
+				r.emit(RuntimeEvent{
+					Type:    EventTypeError,
+					Message: fmt.Sprintf("Failed to encode tool observation for step %s: %v", step.ID, buildErr),
+					Level:   StatusLevelError,
+				})
+			} else {
+				r.appendHistory(ChatMessage{
+					Role:       RoleTool,
+					Content:    toolMessage,
+					ToolCallID: toolCall.ID,
+					Name:       toolCall.Name,
+					Timestamp:  time.Now(),
+				})
+			}
+		}
+
+		metadata := map[string]any{
+			"step_id":   step.ID,
+			"title":     step.Title,
+			"status":    status,
+			"stdout":    observation.Stdout,
+			"stderr":    observation.Stderr,
+			"truncated": observation.Truncated,
+		}
+		if observation.ExitCode != nil {
+			metadata["exit_code"] = *observation.ExitCode
+		}
+		if observation.Details != "" {
+			metadata["details"] = observation.Details
+		}
+
+		r.emit(RuntimeEvent{
+			Type:     EventTypeStatus,
+			Message:  message,
+			Level:    level,
+			Metadata: metadata,
+		})
+
+		if err != nil {
+			r.emit(RuntimeEvent{
+				Type:    EventTypeRequestInput,
+				Message: "Command failed. Provide guidance to continue.",
+				Level:   StatusLevelWarn,
+			})
+			return
+		}
+	}
 }
 
 func (r *Runtime) consumeInput(ctx context.Context) error {

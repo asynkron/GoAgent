@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
+	"sync"
 
 	"github.com/joho/godotenv"
 
@@ -48,14 +51,15 @@ func main() {
 	}
 
 	options := runtime.RuntimeOptions{
-		APIKey:              apiKey,
-		Model:               *model,
-		ReasoningEffort:     *reasoningEffort,
-		AutoApprove:         *autoApprove,
-		NoHuman:             *noHuman,
-		SystemPromptAugment: *promptAugmentation,
-		PlanReminderMessage: *planReminder,
-		NoHumanAutoMessage:  *autoMessage,
+		APIKey:                  apiKey,
+		Model:                   *model,
+		ReasoningEffort:         *reasoningEffort,
+		AutoApprove:             *autoApprove,
+		NoHuman:                 *noHuman,
+		SystemPromptAugment:     *promptAugmentation,
+		PlanReminderMessage:     *planReminder,
+		NoHumanAutoMessage:      *autoMessage,
+		DisableOutputForwarding: true,
 	}
 
 	agent, err := runtime.NewRuntime(options)
@@ -64,8 +68,41 @@ func main() {
 		os.Exit(1)
 	}
 
+	outputs := agent.Outputs()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for evt := range outputs {
+			level := string(evt.Level)
+			if level != "" {
+				fmt.Fprintf(os.Stdout, "[%s:%s] %s\n", evt.Type, level, evt.Message)
+			} else {
+				fmt.Fprintf(os.Stdout, "[%s] %s\n", evt.Type, evt.Message)
+			}
+
+			if len(evt.Metadata) == 0 {
+				continue
+			}
+
+			data, err := json.MarshalIndent(evt.Metadata, "", "  ")
+			if err != nil {
+				fmt.Fprintf(os.Stdout, "  metadata: %+v\n", evt.Metadata)
+				continue
+			}
+
+			fmt.Fprintln(os.Stdout, "  metadata:")
+			for _, line := range strings.Split(string(data), "\n") {
+				fmt.Fprintf(os.Stdout, "    %s\n", line)
+			}
+		}
+	}()
+
 	if err := agent.Run(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "runtime error: %v\n", err)
+		wg.Wait()
 		os.Exit(1)
 	}
+
+	wg.Wait()
 }

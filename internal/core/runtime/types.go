@@ -80,6 +80,7 @@ type PlanStep struct {
 	WaitingForID []string         `json:"waitingForId"`
 	Command      CommandDraft     `json:"command"`
 	Observation  *PlanObservation `json:"observation,omitempty"`
+	Executing    bool             `json:"-"`
 }
 
 // PlanResponse captures the structured assistant output.
