@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 )
@@ -115,7 +114,7 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 		finalErr        error
 	)
 
-	stepResults := make(map[string]StepObservation)
+	var orderedResults []StepObservation
 
 	for {
 		if ctx.Err() != nil {
@@ -200,7 +199,7 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 
 		lastObservation = observation
 		haveObservation = true
-		stepResults[step.ID] = result
+		orderedResults = append(orderedResults, result)
 
 		metadata := map[string]any{
 			"step_id":   step.ID,
@@ -226,19 +225,6 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 
 		if err != nil {
 			break
-		}
-	}
-
-	var orderedResults []StepObservation
-	if len(stepResults) > 0 {
-		ids := make([]string, 0, len(stepResults))
-		for id := range stepResults {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		orderedResults = make([]StepObservation, 0, len(ids))
-		for _, id := range ids {
-			orderedResults = append(orderedResults, stepResults[id])
 		}
 	}
 
