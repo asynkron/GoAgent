@@ -96,6 +96,38 @@ func (pm *PlanManager) Ready() (*PlanStep, bool) {
 	return nil, false
 }
 
+// ExecutableCount reports how many pending steps have all dependencies satisfied.
+func (pm *PlanManager) ExecutableCount() int {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	count := 0
+	for _, id := range pm.order {
+		step := pm.steps[id]
+		if step == nil || step.Status != PlanPending || step.Executing {
+			continue
+		}
+
+		ready := true
+		for _, waitID := range step.WaitingForID {
+			dep := pm.steps[waitID]
+			if dep == nil {
+				continue
+			}
+			if dep.Status != PlanCompleted {
+				ready = false
+				break
+			}
+		}
+
+		if ready {
+			count++
+		}
+	}
+
+	return count
+}
+
 // UpdateStatus updates the step status while preserving metadata.
 func (pm *PlanManager) UpdateStatus(id string, status PlanStatus, observation *PlanObservation) error {
 	pm.mu.Lock()

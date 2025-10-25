@@ -250,6 +250,75 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 		return nil
 	}
 
+	go r.planExecutionLoop(ctx, plan, toolCall)
+
+	return nil
+}
+
+func (r *Runtime) planExecutionLoop(ctx context.Context, initialPlan *PlanResponse, initialToolCall ToolCall) {
+	plan := initialPlan
+	toolCall := initialToolCall
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		if plan == nil {
+			r.emit(RuntimeEvent{
+				Type:    EventTypeError,
+				Message: "Received nil plan response.",
+				Level:   StatusLevelError,
+			})
+			r.emit(RuntimeEvent{
+				Type:    EventTypeRequestInput,
+				Message: "Unable to continue plan execution. Provide the next instruction.",
+				Level:   StatusLevelInfo,
+			})
+			return
+		}
+
+		execCount := r.recordPlanResponse(plan, toolCall)
+		if execCount == 0 {
+			r.emit(RuntimeEvent{
+				Type:    EventTypeStatus,
+				Message: "Plan has no executable steps.",
+				Level:   StatusLevelInfo,
+			})
+			r.emit(RuntimeEvent{
+				Type:    EventTypeRequestInput,
+				Message: "Plan has no executable steps. Provide the next instruction.",
+				Level:   StatusLevelInfo,
+			})
+			return
+		}
+
+		r.executePendingCommands(ctx, toolCall)
+		if ctx.Err() != nil {
+			return
+		}
+
+		nextPlan, nextToolCall, err := r.client.RequestPlan(ctx, r.historySnapshot())
+		if err != nil {
+			r.emit(RuntimeEvent{
+				Type:    EventTypeError,
+				Message: fmt.Sprintf("Failed to contact OpenAI: %v", err),
+				Level:   StatusLevelError,
+			})
+			r.emit(RuntimeEvent{
+				Type:    EventTypeRequestInput,
+				Message: "You can provide another prompt.",
+				Level:   StatusLevelInfo,
+			})
+			return
+		}
+
+		plan = nextPlan
+		toolCall = nextToolCall
+	}
+}
+
+func (r *Runtime) recordPlanResponse(plan *PlanResponse, toolCall ToolCall) int {
 	assistantMessage := ChatMessage{
 		Role:      RoleAssistant,
 		Timestamp: time.Now(),
@@ -299,17 +368,7 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 		Metadata: planMetadata,
 	})
 
-	if len(plan.Plan) > 0 {
-		go r.executePendingCommands(ctx, toolCall)
-	} else {
-		r.emit(RuntimeEvent{
-			Type:    EventTypeRequestInput,
-			Message: "No plan steps returned. Provide the next instruction.",
-			Level:   StatusLevelInfo,
-		})
-	}
-
-	return nil
+	return r.plan.ExecutableCount()
 }
 
 func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall) {
@@ -325,30 +384,10 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 
 		step, ok := r.plan.Ready()
 		if !ok {
-			if r.plan.HasPending() {
-				reminder := r.options.PlanReminderMessage
-				if strings.TrimSpace(reminder) == "" {
-					reminder = DefaultPlanReminder
-				}
-				r.emit(RuntimeEvent{
-					Type:    EventTypeStatus,
-					Message: reminder,
-					Level:   StatusLevelInfo,
-				})
-				r.emit(RuntimeEvent{
-					Type:    EventTypeRequestInput,
-					Message: reminder,
-					Level:   StatusLevelInfo,
-				})
-			} else {
+			if !r.plan.HasPending() {
 				r.emit(RuntimeEvent{
 					Type:    EventTypeStatus,
 					Message: "Plan execution completed.",
-					Level:   StatusLevelInfo,
-				})
-				r.emit(RuntimeEvent{
-					Type:    EventTypeRequestInput,
-					Message: "Plan completed. Provide the next instruction.",
 					Level:   StatusLevelInfo,
 				})
 			}
@@ -443,11 +482,6 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 		})
 
 		if err != nil {
-			r.emit(RuntimeEvent{
-				Type:    EventTypeRequestInput,
-				Message: "Command failed. Provide guidance to continue.",
-				Level:   StatusLevelWarn,
-			})
 			return
 		}
 	}
