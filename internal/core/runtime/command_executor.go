@@ -130,7 +130,6 @@ func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObser
 		Stdout:    string(truncatedStdout),
 		Stderr:    string(truncatedStderr),
 		Truncated: truncated,
-		Plan:      nil,
 	}
 
 	enforceObservationLimit(&observation)
@@ -324,13 +323,34 @@ func enforceObservationLimit(payload *PlanObservationPayload) {
 		return
 	}
 
-	if len(payload.Stdout) > maxObservationBytes {
-		payload.Stdout = payload.Stdout[len(payload.Stdout)-maxObservationBytes:]
+	trimBuffer := func(value string) (string, bool) {
+		if len(value) <= maxObservationBytes {
+			return value, false
+		}
+		return value[len(value)-maxObservationBytes:], true
+	}
+
+	if trimmed, truncated := trimBuffer(payload.Stdout); truncated {
+		payload.Stdout = trimmed
 		payload.Truncated = true
 	}
-	if len(payload.Stderr) > maxObservationBytes {
-		payload.Stderr = payload.Stderr[len(payload.Stderr)-maxObservationBytes:]
+	if trimmed, truncated := trimBuffer(payload.Stderr); truncated {
+		payload.Stderr = trimmed
 		payload.Truncated = true
+	}
+
+	for i := range payload.PlanObservation {
+		entry := &payload.PlanObservation[i]
+		if trimmed, truncated := trimBuffer(entry.Stdout); truncated {
+			entry.Stdout = trimmed
+			entry.Truncated = true
+			payload.Truncated = true
+		}
+		if trimmed, truncated := trimBuffer(entry.Stderr); truncated {
+			entry.Stderr = trimmed
+			entry.Truncated = true
+			payload.Truncated = true
+		}
 	}
 }
 
@@ -358,7 +378,7 @@ func buildShellCommand(ctx context.Context, shell, run string) (*exec.Cmd, error
 func BuildToolMessage(observation PlanObservationPayload) (string, error) {
 	buf := bytes.Buffer{}
 	encoder := jsonEncoder(&buf)
-	if err := encoder.Encode(PlanObservation{ObservationForLLM: &observation}); err != nil {
+	if err := encoder.Encode(observation); err != nil {
 		return "", err
 	}
 	result := strings.TrimSpace(buf.String())

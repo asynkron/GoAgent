@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -604,35 +605,6 @@ func computeValidationBackoff(attempt int) time.Duration {
 	return delay
 }
 
-func sanitizePlanForObservation(steps []PlanStep) []PlanStep {
-	if len(steps) == 0 {
-		return steps
-	}
-
-	sanitized := make([]PlanStep, len(steps))
-	for i := range steps {
-		step := steps[i]
-		step.Command = CommandDraft{}
-		if step.WaitingForID != nil {
-			step.WaitingForID = append([]string{}, step.WaitingForID...)
-		}
-		if step.Observation != nil {
-			obs := PlanObservation{}
-			if step.Observation.ObservationForLLM != nil {
-				payloadCopy := *step.Observation.ObservationForLLM
-				enforceObservationLimit(&payloadCopy)
-				if len(payloadCopy.Plan) > 0 {
-					payloadCopy.Plan = sanitizePlanForObservation(payloadCopy.Plan)
-				}
-				obs.ObservationForLLM = &payloadCopy
-			}
-			step.Observation = &obs
-		}
-		sanitized[i] = step
-	}
-	return sanitized
-}
-
 // filterCompletedSteps drops plan entries that already finished so the executor
 // does not revisit completed work when the model resubmits the same plan. Any
 // dependency edges pointing at removed steps are also pruned so remaining steps
@@ -744,6 +716,8 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 		finalErr        error
 	)
 
+	stepResults := make(map[string]StepObservation)
+
 	for {
 		if ctx.Err() != nil {
 			finalErr = ctx.Err()
@@ -802,7 +776,19 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 			finalErr = err
 		}
 
-		planObservation := &PlanObservation{ObservationForLLM: &observation}
+		result := StepObservation{
+			ID:        step.ID,
+			Status:    status,
+			Stdout:    observation.Stdout,
+			Stderr:    observation.Stderr,
+			ExitCode:  observation.ExitCode,
+			Details:   observation.Details,
+			Truncated: observation.Truncated,
+		}
+
+		planObservation := &PlanObservation{ObservationForLLM: &PlanObservationPayload{
+			PlanObservation: []StepObservation{result},
+		}}
 		if updateErr := r.plan.UpdateStatus(step.ID, status, planObservation); updateErr != nil {
 			r.emit(RuntimeEvent{
 				Type:    EventTypeError,
@@ -813,9 +799,9 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 			break
 		}
 
-		observation.Plan = r.plan.SortOrder()
 		lastObservation = observation
 		haveObservation = true
+		stepResults[step.ID] = result
 
 		metadata := map[string]any{
 			"step_id":   step.ID,
@@ -844,10 +830,26 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 		}
 	}
 
-	payload := PlanObservationPayload{Plan: r.plan.SortOrder()}
+	orderedResults := make([]StepObservation, 0, len(stepResults))
+	if len(stepResults) > 0 {
+		ids := make([]string, 0, len(stepResults))
+		for id := range stepResults {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		orderedResults = make([]StepObservation, 0, len(ids))
+		for _, id := range ids {
+			orderedResults = append(orderedResults, stepResults[id])
+		}
+	}
+
+	payload := PlanObservationPayload{PlanObservation: orderedResults}
 	if haveObservation {
-		payload = lastObservation
-		payload.Plan = r.plan.SortOrder()
+		payload.Stdout = lastObservation.Stdout
+		payload.Stderr = lastObservation.Stderr
+		payload.Truncated = lastObservation.Truncated
+		payload.ExitCode = lastObservation.ExitCode
+		payload.Details = lastObservation.Details
 	}
 
 	if payload.Summary == "" {
@@ -871,11 +873,6 @@ func (r *Runtime) appendToolObservation(toolCall ToolCall, payload PlanObservati
 		return
 	}
 
-	if payload.Plan == nil {
-		payload.Plan = r.plan.SortOrder()
-	}
-
-	payload.Plan = sanitizePlanForObservation(payload.Plan)
 	enforceObservationLimit(&payload)
 
 	toolMessage, err := BuildToolMessage(payload)
