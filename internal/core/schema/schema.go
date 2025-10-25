@@ -9,7 +9,7 @@ import (
 const ToolName = "open-agent"
 
 // toolDescription mirrors the TypeScript tool description so prompts stay aligned.
-const toolDescription = "Return the response envelope that matches the OpenAgent protocol (message, plan, and command fields)."
+const toolDescription = "Return the response envelope that matches the OpenAgent protocol (message, reasoning, plan, and command fields)."
 
 // planResponseSchemaJSON copies the Draft-07 JSON schema used by the TypeScript runtime.
 // The schema is stored as raw JSON so we can provide it to OpenAI without translation losses.
@@ -17,11 +17,16 @@ const planResponseSchemaJSON = `{
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "additionalProperties": false,
-  "required": ["message", "plan", "requireHumanInput"],
+  "required": ["message", "reasoning", "plan", "requireHumanInput"],
   "properties": {
     "message": {
       "type": "string",
       "description": "Markdown formatted message to the user."
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "Supporting reasoning or commentary that can be used to explain the plan or message without being surfaced directly to the user.",
+      "default": ""
     },
     "plan": {
       "type": "array",
