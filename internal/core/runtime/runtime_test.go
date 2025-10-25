@@ -36,7 +36,7 @@ func TestExecutePendingCommands_AppendsSingleToolMessage(t *testing.T) {
 
 	rt.executePendingCommands(context.Background(), ToolCall{ID: "call-1", Name: "open-agent"})
 
-	// The tool history should record a single message for the full plan snapshot.
+	// The tool history should record a single message summarizing executed steps.
 	history := rt.historySnapshot()
 	if got := len(history); got != 1 {
 		t.Fatalf("expected exactly one tool message, got %d", got)
@@ -47,39 +47,21 @@ func TestExecutePendingCommands_AppendsSingleToolMessage(t *testing.T) {
 		t.Fatalf("expected role %q, got %q", RoleTool, toolMessage.Role)
 	}
 
-	var observation PlanObservation
+	var observation PlanObservationPayload
 	if err := json.Unmarshal([]byte(toolMessage.Content), &observation); err != nil {
 		t.Fatalf("failed to decode tool message: %v", err)
 	}
 
-	payload := observation.ObservationForLLM
-	if payload == nil {
-		t.Fatalf("expected payload to be present")
-	}
-
-	if got := len(payload.Plan); got != 2 {
+	if got := len(observation.PlanObservation); got != 2 {
 		t.Fatalf("expected plan length 2, got %d", got)
 	}
 
-	for _, step := range payload.Plan {
-		if step.Observation == nil || step.Observation.ObservationForLLM == nil {
-			t.Fatalf("expected observation for step %s", step.ID)
-		}
+	for _, step := range observation.PlanObservation {
 		if step.Status != PlanCompleted {
 			t.Fatalf("expected step %s to complete, got %s", step.ID, step.Status)
 		}
-		if step.Command.Run != "" || step.Command.Shell != "" {
-			t.Fatalf("expected sanitized command for step %s, got shell=%q run=%q", step.ID, step.Command.Shell, step.Command.Run)
-		}
-
-		obsPayload := step.Observation.ObservationForLLM
-		if obsPayload.ExitCode == nil || *obsPayload.ExitCode != 0 {
-			t.Fatalf("expected zero exit code, got %v", obsPayload.ExitCode)
-		}
-		for _, nested := range obsPayload.Plan {
-			if nested.Command.Run != "" || nested.Command.Shell != "" {
-				t.Fatalf("expected nested plan command sanitized for step %s", nested.ID)
-			}
+		if step.ExitCode == nil || *step.ExitCode != 0 {
+			t.Fatalf("expected zero exit code, got %v", step.ExitCode)
 		}
 	}
 }
@@ -124,23 +106,18 @@ func TestExecutePendingCommands_FailureStillRecordsSingleToolMessage(t *testing.
 		t.Fatalf("expected role %q, got %q", RoleTool, toolMessage.Role)
 	}
 
-	var observation PlanObservation
+	var observation PlanObservationPayload
 	if err := json.Unmarshal([]byte(toolMessage.Content), &observation); err != nil {
 		t.Fatalf("failed to decode tool message: %v", err)
 	}
 
-	payload := observation.ObservationForLLM
-	if payload == nil {
-		t.Fatalf("expected payload to be present")
-	}
-
-	if got := len(payload.Plan); got != 2 {
+	if got := len(observation.PlanObservation); got != 2 {
 		t.Fatalf("expected plan length 2, got %d", got)
 	}
 
-	var failedStep *PlanStep
-	for i := range payload.Plan {
-		step := payload.Plan[i]
+	var failedStep *StepObservation
+	for i := range observation.PlanObservation {
+		step := observation.PlanObservation[i]
 		if step.ID == "step-2" {
 			failedStep = &step
 			break
@@ -148,31 +125,18 @@ func TestExecutePendingCommands_FailureStillRecordsSingleToolMessage(t *testing.
 	}
 
 	if failedStep == nil {
-		t.Fatalf("failed to locate failed step in plan")
+		t.Fatalf("failed to locate failed step in observations")
 	}
 
 	if failedStep.Status != PlanFailed {
 		t.Fatalf("expected step-2 to fail, got %s", failedStep.Status)
 	}
 
-	if failedStep.Observation == nil || failedStep.Observation.ObservationForLLM == nil {
-		t.Fatalf("expected failed step observation payload")
+	if failedStep.ExitCode == nil || *failedStep.ExitCode == 0 {
+		t.Fatalf("expected non-zero exit code, got %v", failedStep.ExitCode)
 	}
 
-	if failedStep.Command.Run != "" || failedStep.Command.Shell != "" {
-		t.Fatalf("expected sanitized command for failed step, got shell=%q run=%q", failedStep.Command.Shell, failedStep.Command.Run)
-	}
-
-	obsPayload := failedStep.Observation.ObservationForLLM
-	if obsPayload.ExitCode == nil || *obsPayload.ExitCode == 0 {
-		t.Fatalf("expected non-zero exit code, got %v", obsPayload.ExitCode)
-	}
-	for _, nested := range obsPayload.Plan {
-		if nested.Command.Run != "" || nested.Command.Shell != "" {
-			t.Fatalf("expected nested plan command sanitized, got shell=%q run=%q", nested.Command.Shell, nested.Command.Run)
-		}
-	}
-	if payload.Summary == "" {
+	if observation.Summary == "" {
 		t.Fatalf("expected summary to describe execution outcome")
 	}
 }

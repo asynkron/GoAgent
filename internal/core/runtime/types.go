@@ -51,20 +51,31 @@ const (
 	PlanAbandoned PlanStatus = "abandoned"
 )
 
+// StepObservation summarizes the outcome for a specific plan step.
+type StepObservation struct {
+	ID        string     `json:"id"`
+	Status    PlanStatus `json:"status"`
+	Stdout    string     `json:"stdout,omitempty"`
+	Stderr    string     `json:"stderr,omitempty"`
+	ExitCode  *int       `json:"exit_code,omitempty"`
+	Details   string     `json:"details,omitempty"`
+	Truncated bool       `json:"truncated,omitempty"`
+}
+
 // PlanObservationPayload mirrors the JSON payload forwarded back to the model.
 type PlanObservationPayload struct {
-	Plan                    []PlanStep `json:"plan,omitempty"`
-	Stdout                  string     `json:"stdout,omitempty"`
-	Stderr                  string     `json:"stderr,omitempty"`
-	Truncated               bool       `json:"truncated,omitempty"`
-	ExitCode                *int       `json:"exit_code,omitempty"`
-	JSONParseError          bool       `json:"json_parse_error,omitempty"`
-	SchemaValidationError   bool       `json:"schema_validation_error,omitempty"`
-	ResponseValidationError bool       `json:"response_validation_error,omitempty"`
-	CanceledByHuman         bool       `json:"canceled_by_human,omitempty"`
-	OperationCanceled       bool       `json:"operation_canceled,omitempty"`
-	Summary                 string     `json:"summary,omitempty"`
-	Details                 string     `json:"details,omitempty"`
+	PlanObservation         []StepObservation `json:"plan_observation,omitempty"`
+	Stdout                  string            `json:"-"`
+	Stderr                  string            `json:"-"`
+	Truncated               bool              `json:"-"`
+	ExitCode                *int              `json:"-"`
+	JSONParseError          bool              `json:"json_parse_error,omitempty"`
+	SchemaValidationError   bool              `json:"schema_validation_error,omitempty"`
+	ResponseValidationError bool              `json:"response_validation_error,omitempty"`
+	CanceledByHuman         bool              `json:"canceled_by_human,omitempty"`
+	OperationCanceled       bool              `json:"operation_canceled,omitempty"`
+	Summary                 string            `json:"summary,omitempty"`
+	Details                 string            `json:"details,omitempty"`
 }
 
 // PlanObservation bundles the payload with optional metadata.

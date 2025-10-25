@@ -53,8 +53,10 @@ func (pm *PlanManager) Snapshot() []PlanStep {
 				obsCopy := *step.Observation
 				if step.Observation.ObservationForLLM != nil {
 					payloadCopy := *step.Observation.ObservationForLLM
-					if payloadCopy.Plan != nil {
-						payloadCopy.Plan = append([]PlanStep{}, payloadCopy.Plan...)
+					if len(payloadCopy.PlanObservation) > 0 {
+						planCopy := make([]StepObservation, len(payloadCopy.PlanObservation))
+						copy(planCopy, payloadCopy.PlanObservation)
+						payloadCopy.PlanObservation = planCopy
 					}
 					obsCopy.ObservationForLLM = &payloadCopy
 				}
