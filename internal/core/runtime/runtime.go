@@ -3,7 +3,6 @@ package runtime
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -346,24 +345,6 @@ func (r *Runtime) recordPlanResponse(plan *PlanResponse, toolCall ToolCall) int 
 		ToolCalls: []ToolCall{toolCall},
 	}
 	r.appendHistory(assistantMessage)
-
-	planBytes, err := json.Marshal(plan)
-	if err != nil {
-		r.emit(RuntimeEvent{
-			Type:    EventTypeError,
-			Message: fmt.Sprintf("Failed to encode plan: %v", err),
-			Level:   StatusLevelError,
-		})
-	} else {
-		toolMessage := ChatMessage{
-			Role:       RoleTool,
-			Content:    string(planBytes),
-			ToolCallID: toolCall.ID,
-			Name:       toolCall.Name,
-			Timestamp:  time.Now(),
-		}
-		r.appendHistory(toolMessage)
-	}
 
 	r.plan.Replace(plan.Plan)
 
