@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/joho/godotenv"
 
 	"github.com/asynkron/goagent/internal/core/runtime"
@@ -66,11 +67,22 @@ func main() {
 	go func() {
 		defer wg.Done()
 		for evt := range outputs {
-			level := string(evt.Level)
-			if level != "" {
-				fmt.Fprintf(os.Stdout, "[%s:%s] %s\n", evt.Type, level, evt.Message)
+			if evt.Type == runtime.EventTypeAssistantMessage {
+				rendered, err := glamour.Render(evt.Message, "dark")
+				if err != nil {
+					// Fall back to the plain message if Glamour rendering fails so the user still
+					// sees the assistant output.
+					fmt.Fprintln(os.Stdout, evt.Message)
+				} else {
+					fmt.Fprint(os.Stdout, rendered)
+				}
 			} else {
-				fmt.Fprintf(os.Stdout, "[%s] %s\n", evt.Type, evt.Message)
+				level := string(evt.Level)
+				if level != "" {
+					fmt.Fprintf(os.Stdout, "[%s:%s] %s\n", evt.Type, level, evt.Message)
+				} else {
+					fmt.Fprintf(os.Stdout, "[%s] %s\n", evt.Type, evt.Message)
+				}
 			}
 
 			if len(evt.Metadata) == 0 {
