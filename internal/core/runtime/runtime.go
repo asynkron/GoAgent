@@ -171,6 +171,12 @@ func (r *Runtime) currentPassCount() int {
 	return r.passCount
 }
 
+func (r *Runtime) resetPassCount() {
+	r.passMu.Lock()
+	r.passCount = 0
+	r.passMu.Unlock()
+}
+
 const baseSystemPrompt = `You are OpenAgent, an AI software engineer that plans and executes work.
 Always respond by calling the "open-agent" function tool with arguments that conform to the provided JSON schema.
 Explain your reasoning to the user in the "message" field and keep plans actionable, safe, and justified.
