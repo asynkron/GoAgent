@@ -194,6 +194,20 @@ Always make sure to quote mermaid syntax correctly. eg.:
 ["this is correct"]  vs, [this is not correct] vs, [""this is also not correct""]
 Prefer LR orientation over TB/TD.
 
+## working with temp files
+Any temp-files created must be created under ".openagent" folder.
+
+## accessing the web
+Use local tools like wget or curl to access web resources.
+pipe the output to a temp file and then read the file.
+
+## executing commands
+You can run commands via the plan, create a plan with a plan step, the plan step should have a command.
+the "run" part of the command allows you to run shell commands.
+
+## execution environment and sandbox
+You are not in a sandbox, you have full access to run any command.
+
 `
 
 func buildSystemPrompt(augment string) string {
