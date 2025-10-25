@@ -630,6 +630,65 @@ func sanitizePlanForObservation(steps []PlanStep) []PlanStep {
 	return sanitized
 }
 
+// filterCompletedSteps drops plan entries that already finished so the executor
+// does not revisit completed work when the model resubmits the same plan. Any
+// dependency edges pointing at removed steps are also pruned so remaining steps
+// no longer wait on work that has already finished.
+func filterCompletedSteps(steps []PlanStep) []PlanStep {
+	if len(steps) == 0 {
+		return steps
+	}
+
+	completedIDs := make(map[string]struct{})
+	filtered := make([]PlanStep, 0, len(steps))
+	for _, step := range steps {
+		if step.Status == PlanCompleted {
+			completedIDs[step.ID] = struct{}{}
+			continue
+		}
+		filtered = append(filtered, step)
+	}
+
+	if len(completedIDs) == 0 {
+		return filtered
+	}
+
+	for i := range filtered {
+		deps := filtered[i].WaitingForID
+		if len(deps) == 0 {
+			continue
+		}
+
+		trimNeeded := false
+		for _, dep := range deps {
+			if _, done := completedIDs[dep]; done {
+				trimNeeded = true
+				break
+			}
+		}
+		if !trimNeeded {
+			continue
+		}
+
+		pruned := make([]string, 0, len(deps))
+		for _, dep := range deps {
+			if _, done := completedIDs[dep]; done {
+				continue
+			}
+			pruned = append(pruned, dep)
+		}
+
+		if len(pruned) == 0 {
+			filtered[i].WaitingForID = nil
+			continue
+		}
+
+		filtered[i].WaitingForID = pruned
+	}
+
+	return filtered
+}
+
 func (r *Runtime) recordPlanResponse(plan *PlanResponse, toolCall ToolCall) int {
 	assistantMessage := ChatMessage{
 		Role:      RoleAssistant,
@@ -638,10 +697,11 @@ func (r *Runtime) recordPlanResponse(plan *PlanResponse, toolCall ToolCall) int 
 	}
 	r.appendHistory(assistantMessage)
 
-	r.plan.Replace(plan.Plan)
+	trimmedPlan := filterCompletedSteps(plan.Plan)
+	r.plan.Replace(trimmedPlan)
 
 	planMetadata := map[string]any{
-		"plan":                plan.Plan,
+		"plan":                trimmedPlan,
 		"tool_call_id":        toolCall.ID,
 		"tool_name":           toolCall.Name,
 		"require_human_input": plan.RequireHumanInput,
@@ -652,7 +712,7 @@ func (r *Runtime) recordPlanResponse(plan *PlanResponse, toolCall ToolCall) int 
 
 	r.emit(RuntimeEvent{
 		Type:    EventTypeStatus,
-		Message: fmt.Sprintf("Received plan with %d step(s).", len(plan.Plan)),
+		Message: fmt.Sprintf("Received plan with %d step(s).", len(trimmedPlan)),
 		Level:   StatusLevelInfo,
 		Metadata: map[string]any{
 			"tool_call_id": toolCall.ID,
