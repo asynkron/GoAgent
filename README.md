@@ -4,6 +4,10 @@ A lightweight Go port of the OpenAgent orchestration loop. The runtime mirrors
 the communication model of the upstream TypeScript implementation by exposing
 separate input and output queues that are backed by Go channels.
 
+## Requirements
+
+Go 1.25 (tested with 1.25.1) or newer is required to build the runtime.
+
 ## Usage
 
 ```bash
