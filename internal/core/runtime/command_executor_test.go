@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +67,32 @@ func TestBuildShellCommand(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEnforceObservationLimit(t *testing.T) {
+	t.Parallel()
+
+	payload := PlanObservationPayload{
+		Stdout: strings.Repeat("a", maxObservationBytes+10),
+		Stderr: strings.Repeat("b", maxObservationBytes+5),
+	}
+
+	enforceObservationLimit(&payload)
+
+	if !payload.Truncated {
+		t.Fatalf("expected payload to be marked truncated")
+	}
+	if len(payload.Stdout) != maxObservationBytes {
+		t.Fatalf("expected stdout to be %d bytes, got %d", maxObservationBytes, len(payload.Stdout))
+	}
+	if len(payload.Stderr) != maxObservationBytes {
+		t.Fatalf("expected stderr to be %d bytes, got %d", maxObservationBytes, len(payload.Stderr))
+	}
+	if !strings.HasSuffix(payload.Stdout, "aaaaaaaaaa") {
+		t.Fatalf("expected stdout to retain tail of original data")
+	}
+	if !strings.HasSuffix(payload.Stderr, "bbbbb") {
+		t.Fatalf("expected stderr to retain tail of original data")
 	}
 }

@@ -350,6 +350,7 @@ func (r *Runtime) planExecutionLoop(ctx context.Context, initialPlan *PlanRespon
 // to the OpenAI client, and emits a status update so hosts can surface that a
 // response was received.
 func (r *Runtime) requestPlan(ctx context.Context) (*PlanResponse, ToolCall, error) {
+	var retryCount int
 	for {
 		history := r.historySnapshot()
 
@@ -363,8 +364,17 @@ func (r *Runtime) requestPlan(ctx context.Context) (*PlanResponse, ToolCall, err
 			return nil, ToolCall{}, validationErr
 		}
 		if retry {
+			retryCount++
+			delay := computeValidationBackoff(retryCount)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil, ToolCall{}, ctx.Err()
+			}
 			continue
 		}
+
+		retryCount = 0
 
 		r.emit(RuntimeEvent{
 			Type:    EventTypeStatus,
@@ -376,7 +386,12 @@ func (r *Runtime) requestPlan(ctx context.Context) (*PlanResponse, ToolCall, err
 	}
 }
 
-const validationDetailLimit = 512
+const (
+	validationDetailLimit   = 512
+	validationBackoffBase   = 250 * time.Millisecond
+	validationBackoffMax    = 4 * time.Second
+	validationBackoffMaxExp = 5
+)
 
 type schemaValidationError struct {
 	issues []string
@@ -485,9 +500,14 @@ func (r *Runtime) handlePlanValidationFailure(toolCall ToolCall, payload PlanObs
 		metadata["tool_name"] = toolCall.Name
 	}
 
+	message := payload.Summary
+	if details := strings.TrimSpace(payload.Details); details != "" {
+		message = fmt.Sprintf("%s Details: %s", message, details)
+	}
+
 	r.emit(RuntimeEvent{
 		Type:     EventTypeStatus,
-		Message:  payload.Summary,
+		Message:  message,
 		Level:    StatusLevelWarn,
 		Metadata: metadata,
 	})
@@ -553,6 +573,55 @@ func truncateForPrompt(value string, limit int) string {
 		return value
 	}
 	return string(runes[:limit]) + "…"
+}
+
+func computeValidationBackoff(attempt int) time.Duration {
+	if attempt <= 0 {
+		attempt = 1
+	}
+	exp := attempt - 1
+	if exp > validationBackoffMaxExp {
+		exp = validationBackoffMaxExp
+	}
+
+	multiplier := 1 << exp
+	delay := validationBackoffBase * time.Duration(multiplier)
+	if delay > validationBackoffMax {
+		return validationBackoffMax
+	}
+	if delay < validationBackoffBase {
+		return validationBackoffBase
+	}
+	return delay
+}
+
+func sanitizePlanForObservation(steps []PlanStep) []PlanStep {
+	if len(steps) == 0 {
+		return steps
+	}
+
+	sanitized := make([]PlanStep, len(steps))
+	for i := range steps {
+		step := steps[i]
+		step.Command = CommandDraft{}
+		if step.WaitingForID != nil {
+			step.WaitingForID = append([]string{}, step.WaitingForID...)
+		}
+		if step.Observation != nil {
+			obs := PlanObservation{}
+			if step.Observation.ObservationForLLM != nil {
+				payloadCopy := *step.Observation.ObservationForLLM
+				enforceObservationLimit(&payloadCopy)
+				if len(payloadCopy.Plan) > 0 {
+					payloadCopy.Plan = sanitizePlanForObservation(payloadCopy.Plan)
+				}
+				obs.ObservationForLLM = &payloadCopy
+			}
+			step.Observation = &obs
+		}
+		sanitized[i] = step
+	}
+	return sanitized
 }
 
 func (r *Runtime) recordPlanResponse(plan *PlanResponse, toolCall ToolCall) int {
@@ -733,6 +802,9 @@ func (r *Runtime) appendToolObservation(toolCall ToolCall, payload PlanObservati
 	if payload.Plan == nil {
 		payload.Plan = r.plan.SortOrder()
 	}
+
+	payload.Plan = sanitizePlanForObservation(payload.Plan)
+	enforceObservationLimit(&payload)
 
 	toolMessage, err := BuildToolMessage(payload)
 	if err != nil {

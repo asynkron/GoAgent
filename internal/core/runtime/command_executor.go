@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const maxObservationBytes = 50 * 1024
+
 // CommandExecutor runs shell commands described by plan steps.
 type CommandExecutor struct{}
 
@@ -84,6 +86,8 @@ func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObser
 		Plan:      nil,
 	}
 
+	enforceObservationLimit(&observation)
+
 	var exitErr *exec.ExitError
 	if errors.As(runErr, &exitErr) {
 		code := exitErr.ExitCode()
@@ -139,6 +143,21 @@ func truncateOutput(output []byte, maxBytes, tailLines int) ([]byte, bool) {
 	}
 
 	return bytes.Join(lines, []byte("\n")), truncated
+}
+
+func enforceObservationLimit(payload *PlanObservationPayload) {
+	if payload == nil {
+		return
+	}
+
+	if len(payload.Stdout) > maxObservationBytes {
+		payload.Stdout = payload.Stdout[len(payload.Stdout)-maxObservationBytes:]
+		payload.Truncated = true
+	}
+	if len(payload.Stderr) > maxObservationBytes {
+		payload.Stderr = payload.Stderr[len(payload.Stderr)-maxObservationBytes:]
+		payload.Truncated = true
+	}
 }
 
 // buildShellCommand normalizes the shell string ("/bin/bash", "bash -lc", etc.)

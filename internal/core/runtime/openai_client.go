@@ -58,6 +58,14 @@ func (c *OpenAIClient) RequestPlan(ctx context.Context, history []ChatMessage) (
 			Function: functionDefinition{Name: c.tool.Name, Description: c.tool.Description, Parameters: c.tool.Parameters},
 		}},
 		ToolChoice: toolChoice{Type: "function", Function: &toolChoiceFunction{Name: c.tool.Name}},
+		ResponseFormat: responseFormat{
+			Type: "json_schema",
+			JSONSchema: jsonSchemaDefinition{
+				Name:   c.tool.Name,
+				Strict: true,
+				Schema: c.tool.Parameters,
+			},
+		},
 	}
 
 	if c.reasoning != "" {
@@ -143,11 +151,12 @@ func buildMessages(history []ChatMessage) []chatMessage {
 // OpenAI Chat Completions API payloads. They allow us to construct the request
 // without pulling in a heavy client dependency.
 type chatCompletionRequest struct {
-	Model      string              `json:"model"`
-	Messages   []chatMessage       `json:"messages"`
-	Tools      []toolSpecification `json:"tools"`
-	ToolChoice toolChoice          `json:"tool_choice"`
-	Reasoning  *reasoningOptions   `json:"reasoning,omitempty"`
+	Model          string              `json:"model"`
+	Messages       []chatMessage       `json:"messages"`
+	Tools          []toolSpecification `json:"tools"`
+	ToolChoice     toolChoice          `json:"tool_choice"`
+	Reasoning      *reasoningOptions   `json:"reasoning,omitempty"`
+	ResponseFormat responseFormat      `json:"response_format"`
 }
 
 type reasoningOptions struct {
@@ -191,6 +200,17 @@ type toolChoice struct {
 
 type toolChoiceFunction struct {
 	Name string `json:"name"`
+}
+
+type responseFormat struct {
+	Type       string               `json:"type"`
+	JSONSchema jsonSchemaDefinition `json:"json_schema"`
+}
+
+type jsonSchemaDefinition struct {
+	Name   string         `json:"name"`
+	Strict bool           `json:"strict"`
+	Schema map[string]any `json:"schema"`
 }
 
 type chatCompletionResponse struct {

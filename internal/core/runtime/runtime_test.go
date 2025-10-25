@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 func TestExecutePendingCommands_AppendsSingleToolMessage(t *testing.T) {
@@ -66,6 +67,19 @@ func TestExecutePendingCommands_AppendsSingleToolMessage(t *testing.T) {
 		}
 		if step.Status != PlanCompleted {
 			t.Fatalf("expected step %s to complete, got %s", step.ID, step.Status)
+		}
+		if step.Command.Run != "" || step.Command.Shell != "" {
+			t.Fatalf("expected sanitized command for step %s, got shell=%q run=%q", step.ID, step.Command.Shell, step.Command.Run)
+		}
+
+		obsPayload := step.Observation.ObservationForLLM
+		if obsPayload.ExitCode == nil || *obsPayload.ExitCode != 0 {
+			t.Fatalf("expected zero exit code, got %v", obsPayload.ExitCode)
+		}
+		for _, nested := range obsPayload.Plan {
+			if nested.Command.Run != "" || nested.Command.Shell != "" {
+				t.Fatalf("expected nested plan command sanitized for step %s", nested.ID)
+			}
 		}
 	}
 }
@@ -145,11 +159,41 @@ func TestExecutePendingCommands_FailureStillRecordsSingleToolMessage(t *testing.
 		t.Fatalf("expected failed step observation payload")
 	}
 
+	if failedStep.Command.Run != "" || failedStep.Command.Shell != "" {
+		t.Fatalf("expected sanitized command for failed step, got shell=%q run=%q", failedStep.Command.Shell, failedStep.Command.Run)
+	}
+
 	obsPayload := failedStep.Observation.ObservationForLLM
 	if obsPayload.ExitCode == nil || *obsPayload.ExitCode == 0 {
 		t.Fatalf("expected non-zero exit code, got %v", obsPayload.ExitCode)
 	}
+	for _, nested := range obsPayload.Plan {
+		if nested.Command.Run != "" || nested.Command.Shell != "" {
+			t.Fatalf("expected nested plan command sanitized, got shell=%q run=%q", nested.Command.Shell, nested.Command.Run)
+		}
+	}
 	if payload.Summary == "" {
 		t.Fatalf("expected summary to describe execution outcome")
+	}
+}
+
+func TestComputeValidationBackoff(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{0, validationBackoffBase},
+		{1, validationBackoffBase},
+		{2, validationBackoffBase * 2},
+		{3, validationBackoffBase * 4},
+		{10, validationBackoffMax},
+	}
+
+	for _, tc := range tests {
+		if got := computeValidationBackoff(tc.attempt); got != tc.want {
+			t.Fatalf("attempt %d: expected %s, got %s", tc.attempt, tc.want, got)
+		}
 	}
 }
