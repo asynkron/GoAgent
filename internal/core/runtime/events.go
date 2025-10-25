@@ -39,6 +39,8 @@ type RuntimeEvent struct {
 	Message  string         `json:"message"`
 	Level    StatusLevel    `json:"level,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+	Pass     int            `json:"pass"`
+	Agent    string         `json:"agent"`
 }
 
 // InputEventType distinguishes the different kinds of inputs that can be

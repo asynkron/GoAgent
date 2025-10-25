@@ -11,11 +11,12 @@ func TestExecutePendingCommands_AppendsSingleToolMessage(t *testing.T) {
 	t.Parallel()
 
 	rt := &Runtime{
-		plan:     NewPlanManager(),
-		executor: NewCommandExecutor(),
-		outputs:  make(chan RuntimeEvent, 10),
-		closed:   make(chan struct{}),
-		history:  []ChatMessage{},
+		plan:      NewPlanManager(),
+		executor:  NewCommandExecutor(),
+		outputs:   make(chan RuntimeEvent, 10),
+		closed:    make(chan struct{}),
+		history:   []ChatMessage{},
+		agentName: "main",
 	}
 
 	rt.plan.Replace([]PlanStep{
@@ -70,11 +71,12 @@ func TestExecutePendingCommands_FailureStillRecordsSingleToolMessage(t *testing.
 	t.Parallel()
 
 	rt := &Runtime{
-		plan:     NewPlanManager(),
-		executor: NewCommandExecutor(),
-		outputs:  make(chan RuntimeEvent, 10),
-		closed:   make(chan struct{}),
-		history:  []ChatMessage{},
+		plan:      NewPlanManager(),
+		executor:  NewCommandExecutor(),
+		outputs:   make(chan RuntimeEvent, 10),
+		closed:    make(chan struct{}),
+		history:   []ChatMessage{},
+		agentName: "main",
 	}
 
 	rt.plan.Replace([]PlanStep{
@@ -166,10 +168,11 @@ func TestRecordPlanResponseFiltersCompletedSteps(t *testing.T) {
 	t.Parallel()
 
 	rt := &Runtime{
-		plan:    NewPlanManager(),
-		outputs: make(chan RuntimeEvent, 10),
-		closed:  make(chan struct{}),
-		history: []ChatMessage{},
+		plan:      NewPlanManager(),
+		outputs:   make(chan RuntimeEvent, 10),
+		closed:    make(chan struct{}),
+		history:   []ChatMessage{},
+		agentName: "main",
 	}
 
 	resp := &PlanResponse{
@@ -209,5 +212,47 @@ func TestRecordPlanResponseFiltersCompletedSteps(t *testing.T) {
 	}
 	if want := []string{"step-pending"}; len(snapshot[1].WaitingForID) != len(want) || snapshot[1].WaitingForID[0] != want[0] {
 		t.Fatalf("expected dependencies %v, got %v", want, snapshot[1].WaitingForID)
+	}
+}
+
+func TestRuntimeEmitAnnotatesEvent(t *testing.T) {
+	t.Parallel()
+
+	rt := &Runtime{
+		outputs:   make(chan RuntimeEvent, 2),
+		closed:    make(chan struct{}),
+		agentName: "main",
+	}
+
+	if pass := rt.incrementPassCount(); pass != 1 {
+		t.Fatalf("expected pass count to be 1, got %d", pass)
+	}
+
+	rt.emit(RuntimeEvent{Type: EventTypeStatus, Message: "hello"})
+
+	select {
+	case evt := <-rt.outputs:
+		if evt.Pass != 1 {
+			t.Fatalf("expected pass to be 1, got %d", evt.Pass)
+		}
+		if evt.Agent != "main" {
+			t.Fatalf("expected agent to be main, got %s", evt.Agent)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for event")
+	}
+
+	rt.emit(RuntimeEvent{Type: EventTypeStatus, Message: "child", Pass: 99, Agent: "worker"})
+
+	select {
+	case evt := <-rt.outputs:
+		if evt.Pass != 99 {
+			t.Fatalf("expected pass to remain 99, got %d", evt.Pass)
+		}
+		if evt.Agent != "worker" {
+			t.Fatalf("expected agent to remain worker, got %s", evt.Agent)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for overridden event")
 	}
 }
