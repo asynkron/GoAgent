@@ -7,9 +7,14 @@ import (
 )
 
 func (r *Runtime) appendHistory(message ChatMessage) {
+	pass := r.currentPassCount()
+	message.Pass = pass
+
 	r.historyMu.Lock()
 	defer r.historyMu.Unlock()
+
 	r.history = append(r.history, message)
+	r.applyHistoryAmnesiaLocked(pass)
 }
 
 func (r *Runtime) historySnapshot() []ChatMessage {

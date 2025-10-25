@@ -16,6 +16,7 @@ type RuntimeOptions struct {
 	Model               string
 	ReasoningEffort     string
 	SystemPromptAugment string
+	AmnesiaAfterPasses  int
 
 	// MaxContextTokens defines the soft cap for the conversation history. When
 	// the estimated usage exceeds CompactWhenPercent of this value, older
@@ -63,6 +64,10 @@ func (o *RuntimeOptions) setDefaults() {
 	if o.Model == "" {
 		o.Model = "gpt-4.1"
 	}
+
+	if o.AmnesiaAfterPasses < 0 {
+		o.AmnesiaAfterPasses = 0
+  }
 	if o.MaxContextTokens <= 0 || o.CompactWhenPercent <= 0 {
 		if budget, ok := defaultModelContextBudgets[strings.ToLower(o.Model)]; ok {
 			if o.MaxContextTokens <= 0 {

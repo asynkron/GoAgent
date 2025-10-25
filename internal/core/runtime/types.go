@@ -20,6 +20,7 @@ type ChatMessage struct {
 	Name       string
 	Timestamp  time.Time
 	ToolCalls  []ToolCall
+	Pass       int
 	// Summarized marks messages that were synthesized by the compactor so we
 	// avoid repeatedly summarizing the same entry.
 	Summarized bool `json:"summarized,omitempty"`
