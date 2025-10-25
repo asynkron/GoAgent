@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -359,6 +360,8 @@ func (r *Runtime) requestPlan(ctx context.Context) (*PlanResponse, ToolCall, err
 	var retryCount int
 	for {
 		history := r.historySnapshot()
+
+		r.writeHistoryLog(history)
 
 		toolCall, err := r.client.RequestPlan(ctx, history)
 		if err != nil {
@@ -1019,6 +1022,27 @@ func (r *Runtime) historySnapshot() []ChatMessage {
 	copyHistory := make([]ChatMessage, len(r.history))
 	copy(copyHistory, r.history)
 	return copyHistory
+}
+
+func (r *Runtime) writeHistoryLog(history []ChatMessage) {
+	// Persist the exact payload forwarded to the model so hosts can inspect it.
+	data, err := json.MarshalIndent(history, "", "  ")
+	if err != nil {
+		r.emit(RuntimeEvent{
+			Type:    EventTypeStatus,
+			Message: fmt.Sprintf("Failed to encode history log: %v", err),
+			Level:   StatusLevelWarn,
+		})
+		return
+	}
+
+	if err := os.WriteFile("history.json", data, 0o644); err != nil {
+		r.emit(RuntimeEvent{
+			Type:    EventTypeStatus,
+			Message: fmt.Sprintf("Failed to write history log: %v", err),
+			Level:   StatusLevelWarn,
+		})
+	}
 }
 
 const baseSystemPrompt = `You are OpenAgent, an AI software engineer that plans and executes work in a sandboxed environment.
