@@ -235,7 +235,7 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 	userMessage := ChatMessage{Role: RoleUser, Content: prompt, Timestamp: time.Now()}
 	r.appendHistory(userMessage)
 
-	plan, toolCall, err := r.client.RequestPlan(ctx, r.historySnapshot())
+	plan, toolCall, err := r.requestPlan(ctx)
 	if err != nil {
 		r.emit(RuntimeEvent{
 			Type:    EventTypeError,
@@ -298,7 +298,7 @@ func (r *Runtime) planExecutionLoop(ctx context.Context, initialPlan *PlanRespon
 			return
 		}
 
-		nextPlan, nextToolCall, err := r.client.RequestPlan(ctx, r.historySnapshot())
+		nextPlan, nextToolCall, err := r.requestPlan(ctx)
 		if err != nil {
 			r.emit(RuntimeEvent{
 				Type:    EventTypeError,
@@ -316,6 +316,27 @@ func (r *Runtime) planExecutionLoop(ctx context.Context, initialPlan *PlanRespon
 		plan = nextPlan
 		toolCall = nextToolCall
 	}
+}
+
+// requestPlan centralizes the logic for requesting a new plan from the assistant.
+// It snapshots the history to guarantee a consistent view, forwards the request
+// to the OpenAI client, and emits a status update so hosts can surface that a
+// response was received.
+func (r *Runtime) requestPlan(ctx context.Context) (*PlanResponse, ToolCall, error) {
+	history := r.historySnapshot()
+
+	plan, toolCall, err := r.client.RequestPlan(ctx, history)
+	if err != nil {
+		return nil, ToolCall{}, err
+	}
+
+	r.emit(RuntimeEvent{
+		Type:    EventTypeStatus,
+		Message: "Assistant response received.",
+		Level:   StatusLevelInfo,
+	})
+
+	return plan, toolCall, nil
 }
 
 func (r *Runtime) recordPlanResponse(plan *PlanResponse, toolCall ToolCall) int {
