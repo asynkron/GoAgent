@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asynkron/goagent/internal/core/schema"
 )
@@ -147,5 +148,82 @@ func TestPlanExecutionLoopPausesForHumanInput(t *testing.T) {
 	}
 	if !strings.Contains(requestEvent.Message, "Assistant requested additional input") {
 		t.Fatalf("unexpected request input message: %s", requestEvent.Message)
+	}
+}
+
+func TestPlanningHistorySnapshotCompactsHistory(t *testing.T) {
+	t.Parallel()
+
+	payload := PlanObservationPayload{
+		Summary: "Executed 2 plan steps without errors.",
+		Details: "Validation succeeded.",
+		PlanObservation: []StepObservation{{
+			ID:     "step-1",
+			Status: PlanCompleted,
+		}, {
+			ID:     "step-2",
+			Status: PlanCompleted,
+		}},
+		Stdout: strings.Repeat("raw-output ", 40),
+	}
+	toolMessage, err := BuildToolMessage(payload)
+	if err != nil {
+		t.Fatalf("failed to marshal tool message: %v", err)
+	}
+
+	now := time.Now()
+	rt := &Runtime{
+		history: []ChatMessage{
+			{Role: RoleSystem, Content: "system", Timestamp: now},
+			{Role: RoleUser, Content: strings.Repeat("user instruction ", 80), Timestamp: now},
+			{Role: RoleAssistant, Content: strings.Repeat("assistant reasoning ", 80), Timestamp: now},
+			{Role: RoleTool, Content: toolMessage, Timestamp: now},
+		},
+		contextBudget: ContextBudget{MaxTokens: 320, CompactWhenPercent: 0.5},
+	}
+
+	original := append([]ChatMessage(nil), rt.history...)
+	beforeTotal, _ := estimateHistoryTokenUsage(original)
+	if beforeTotal <= rt.contextBudget.triggerTokens() {
+		t.Fatalf("expected oversized history for compaction test")
+	}
+
+	history := rt.planningHistorySnapshot()
+
+	if len(history) != len(original) {
+		t.Fatalf("expected history length %d, got %d", len(original), len(history))
+	}
+	if history[0].Role != RoleSystem || history[0].Summarized {
+		t.Fatalf("system prompt should remain untouched: %+v", history[0])
+	}
+	if !history[1].Summarized || history[1].Role != RoleAssistant {
+		t.Fatalf("expected first user message to be summarized, got %+v", history[1])
+	}
+	if !strings.Contains(history[1].Content, summaryPrefix) {
+		t.Fatalf("expected summary marker in content: %s", history[1].Content)
+	}
+
+	if !history[3].Summarized {
+		t.Fatalf("expected tool message to be summarized when exceeding budget")
+	}
+	if !strings.Contains(history[3].Content, payload.Summary) {
+		t.Fatalf("expected tool summary to retain payload summary, got %s", history[3].Content)
+	}
+	if strings.Contains(history[3].Content, "raw-output") {
+		t.Fatalf("expected tool summary to drop raw stdout, got %s", history[3].Content)
+	}
+
+	afterTotal, _ := estimateHistoryTokenUsage(history)
+	if afterTotal > rt.contextBudget.triggerTokens() {
+		t.Fatalf("expected compacted history to be within budget, got %d tokens", afterTotal)
+	}
+
+	// Running the compactor again should not rewrite already summarized entries.
+	second := rt.planningHistorySnapshot()
+	if second[1].Content != history[1].Content {
+		t.Fatalf("expected stable summary, got %q vs %q", second[1].Content, history[1].Content)
+	}
+	if second[3].Content != history[3].Content {
+		t.Fatalf("expected tool summary to remain stable")
 	}
 }

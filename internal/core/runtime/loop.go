@@ -245,7 +245,7 @@ func (r *Runtime) planExecutionLoop(ctx context.Context) {
 func (r *Runtime) requestPlan(ctx context.Context) (*PlanResponse, ToolCall, error) {
 	var retryCount int
 	for {
-		history := r.historySnapshot()
+		history := r.planningHistorySnapshot()
 
 		r.writeHistoryLog(history)
 
