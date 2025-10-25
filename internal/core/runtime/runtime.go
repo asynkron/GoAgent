@@ -33,6 +33,8 @@ type Runtime struct {
 
 	passMu    sync.Mutex
 	passCount int
+
+	agentName string
 }
 
 // NewRuntime configures a new runtime with the provided options.
@@ -54,14 +56,15 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 	}}
 
 	rt := &Runtime{
-		options:  options,
-		inputs:   make(chan InputEvent, options.InputBuffer),
-		outputs:  make(chan RuntimeEvent, options.OutputBuffer),
-		closed:   make(chan struct{}),
-		plan:     NewPlanManager(),
-		client:   client,
-		executor: NewCommandExecutor(),
-		history:  initialHistory,
+		options:   options,
+		inputs:    make(chan InputEvent, options.InputBuffer),
+		outputs:   make(chan RuntimeEvent, options.OutputBuffer),
+		closed:    make(chan struct{}),
+		plan:      NewPlanManager(),
+		client:    client,
+		executor:  NewCommandExecutor(),
+		history:   initialHistory,
+		agentName: "main",
 	}
 
 	for name, handler := range options.InternalCommands {
@@ -120,6 +123,13 @@ func (r *Runtime) enqueue(evt InputEvent) {
 }
 
 func (r *Runtime) emit(evt RuntimeEvent) {
+	if evt.Pass == 0 {
+		evt.Pass = r.currentPassCount()
+	}
+	if evt.Agent == "" {
+		evt.Agent = r.agentName
+	}
+
 	select {
 	case <-r.closed:
 		return
@@ -149,6 +159,12 @@ func (r *Runtime) close() {
 		close(r.closed)
 		close(r.outputs)
 	})
+}
+
+func (r *Runtime) currentPassCount() int {
+	r.passMu.Lock()
+	defer r.passMu.Unlock()
+	return r.passCount
 }
 
 const baseSystemPrompt = `You are OpenAgent, an AI software engineer that plans and executes work.

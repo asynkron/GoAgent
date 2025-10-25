@@ -98,13 +98,14 @@ func TestPlanExecutionLoopPausesForHumanInput(t *testing.T) {
 			OutputBuffer: 16,
 			OutputWriter: io.Discard,
 		},
-		inputs:   make(chan InputEvent, 1),
-		outputs:  make(chan RuntimeEvent, 16),
-		closed:   make(chan struct{}),
-		plan:     NewPlanManager(),
-		client:   client,
-		executor: NewCommandExecutor(),
-		history:  []ChatMessage{{Role: RoleSystem, Content: "system"}},
+		inputs:    make(chan InputEvent, 1),
+		outputs:   make(chan RuntimeEvent, 16),
+		closed:    make(chan struct{}),
+		plan:      NewPlanManager(),
+		client:    client,
+		executor:  NewCommandExecutor(),
+		history:   []ChatMessage{{Role: RoleSystem, Content: "system"}},
+		agentName: "main",
 	}
 
 	ctx := context.Background()
