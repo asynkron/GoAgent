@@ -76,7 +76,17 @@ func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObser
 		return e.executeInternal(ctx, step)
 	}
 
-	execCmd, err := buildShellCommand(ctx, step.Command.Shell, step.Command.Run)
+	// Derive a timeout-scoped context before building the command so the exec.Cmd
+	// inherits the cancellation behavior directly.
+	timeout := time.Duration(step.Command.TimeoutSec) * time.Second
+	if timeout <= 0 {
+		timeout = time.Minute
+	}
+
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	execCmd, err := buildShellCommand(runCtx, step.Command.Shell, step.Command.Run)
 	if err != nil {
 		return PlanObservationPayload{}, fmt.Errorf("command: %w", err)
 	}
@@ -90,29 +100,12 @@ func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObser
 	cmd.Stdout = &stdoutBuf
 	cmd.Stderr = &stderrBuf
 
-	timeout := time.Duration(step.Command.TimeoutSec) * time.Second
-	if timeout <= 0 {
-		timeout = time.Minute
-	}
-
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	if err := cmd.Start(); err != nil {
-		return PlanObservationPayload{}, fmt.Errorf("command: start: %w", err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	var runErr error
-	select {
-	case <-runCtx.Done():
-		_ = cmd.Process.Kill()
+	runErr := cmd.Run()
+	// Preserve the previous timeout message while letting other context cancellations
+	// bubble up naturally for the caller to inspect.
+	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
 		runErr = fmt.Errorf("command: timeout after %s", timeout)
-	case err := <-done:
+	} else if err := runCtx.Err(); err != nil {
 		runErr = err
 	}
 
