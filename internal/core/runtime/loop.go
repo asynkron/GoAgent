@@ -26,7 +26,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 		}()
 	}
 
-	if !r.options.DisableInputReader {
+	if !r.options.DisableInputReader && !r.options.HandsFree {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -53,11 +53,7 @@ func (r *Runtime) loop(ctx context.Context) error {
 		Message: "Agent runtime started",
 		Level:   StatusLevelInfo,
 	})
-	r.emit(RuntimeEvent{
-		Type:    EventTypeRequestInput,
-		Message: "Enter a prompt to begin.",
-		Level:   StatusLevelInfo,
-	})
+	r.emitRequestInput("Enter a prompt to begin.")
 
 	for {
 		select {
@@ -69,6 +65,8 @@ func (r *Runtime) loop(ctx context.Context) error {
 			})
 			r.close()
 			return ctx.Err()
+		case <-r.closed:
+			return nil
 		case evt, ok := <-r.inputs:
 			if !ok {
 				r.close()
@@ -97,11 +95,7 @@ func (r *Runtime) handleInput(ctx context.Context, evt InputEvent) error {
 			Message: fmt.Sprintf("Cancel requested: %s", strings.TrimSpace(evt.Reason)),
 			Level:   StatusLevelWarn,
 		})
-		r.emit(RuntimeEvent{
-			Type:    EventTypeRequestInput,
-			Message: "Ready for the next instruction.",
-			Level:   StatusLevelInfo,
-		})
+		r.emitRequestInput("Ready for the next instruction.")
 		return nil
 	case InputTypeShutdown:
 		r.emit(RuntimeEvent{
@@ -124,11 +118,7 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 			Message: "Ignoring empty prompt.",
 			Level:   StatusLevelWarn,
 		})
-		r.emit(RuntimeEvent{
-			Type:    EventTypeRequestInput,
-			Message: "Awaiting a non-empty prompt.",
-			Level:   StatusLevelInfo,
-		})
+		r.emitRequestInput("Awaiting a non-empty prompt.")
 		return nil
 	}
 
@@ -141,6 +131,8 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 		return nil
 	}
 	defer r.endWork()
+
+	r.resetPassCount()
 
 	r.emit(RuntimeEvent{
 		Type:    EventTypeStatus,
@@ -163,6 +155,21 @@ func (r *Runtime) planExecutionLoop(ctx context.Context) {
 		}
 
 		pass := r.incrementPassCount()
+		if r.options.MaxPasses > 0 && pass > r.options.MaxPasses {
+			message := fmt.Sprintf("Maximum pass limit (%d) reached. Stopping execution.", r.options.MaxPasses)
+			r.emit(RuntimeEvent{
+				Type:     EventTypeError,
+				Message:  message,
+				Level:    StatusLevelError,
+				Metadata: map[string]any{"max_passes": r.options.MaxPasses, "pass": pass},
+			})
+			r.emitRequestInput("Pass limit reached. Provide additional guidance to continue.")
+			if r.options.HandsFree {
+				r.close()
+			}
+			return
+		}
+
 		r.emit(RuntimeEvent{
 			Type:    EventTypeStatus,
 			Message: fmt.Sprintf("Starting plan execution pass #%d.", pass),
@@ -176,11 +183,7 @@ func (r *Runtime) planExecutionLoop(ctx context.Context) {
 				Message: fmt.Sprintf("Failed to contact OpenAI: %v", err),
 				Level:   StatusLevelError,
 			})
-			r.emit(RuntimeEvent{
-				Type:    EventTypeRequestInput,
-				Message: "You can provide another prompt.",
-				Level:   StatusLevelInfo,
-			})
+			r.emitRequestInput("You can provide another prompt.")
 			return
 		}
 
@@ -190,11 +193,7 @@ func (r *Runtime) planExecutionLoop(ctx context.Context) {
 				Message: "Received nil plan response.",
 				Level:   StatusLevelError,
 			})
-			r.emit(RuntimeEvent{
-				Type:    EventTypeRequestInput,
-				Message: "Unable to continue plan execution. Provide the next instruction.",
-				Level:   StatusLevelInfo,
-			})
+			r.emitRequestInput("Unable to continue plan execution. Provide the next instruction.")
 			return
 		}
 
@@ -206,11 +205,7 @@ func (r *Runtime) planExecutionLoop(ctx context.Context) {
 			r.appendToolObservation(toolCall, PlanObservationPayload{
 				Summary: "Assistant requested additional input before continuing the plan.",
 			})
-			r.emit(RuntimeEvent{
-				Type:    EventTypeRequestInput,
-				Message: "Assistant requested additional input before continuing.",
-				Level:   StatusLevelInfo,
-			})
+			r.emitRequestInput("Assistant requested additional input before continuing.")
 			return
 		}
 
@@ -223,11 +218,20 @@ func (r *Runtime) planExecutionLoop(ctx context.Context) {
 				Message: "Plan has no executable steps.",
 				Level:   StatusLevelInfo,
 			})
-			r.emit(RuntimeEvent{
-				Type:    EventTypeRequestInput,
-				Message: "Plan has no executable steps. Provide the next instruction.",
-				Level:   StatusLevelInfo,
-			})
+			if r.options.HandsFree {
+				summary := fmt.Sprintf("Hands-free session complete after %d pass(es); assistant reported no further work.", pass)
+				if trimmed := strings.TrimSpace(plan.Message); trimmed != "" {
+					summary = fmt.Sprintf("%s Summary: %s", summary, trimmed)
+				}
+				r.emit(RuntimeEvent{
+					Type:    EventTypeStatus,
+					Message: summary,
+					Level:   StatusLevelInfo,
+				})
+				r.close()
+				return
+			}
+			r.emitRequestInput("Plan has no executable steps. Provide the next instruction.")
 			return
 		}
 
@@ -355,6 +359,17 @@ func (r *Runtime) forwardOutputs(ctx context.Context) {
 			_, _ = fmt.Fprintf(r.options.OutputWriter, "[%s] %s\n", evt.Type, evt.Message)
 		}
 	}
+}
+
+func (r *Runtime) emitRequestInput(message string) {
+	if r.options.HandsFree {
+		return
+	}
+	r.emit(RuntimeEvent{
+		Type:    EventTypeRequestInput,
+		Message: message,
+		Level:   StatusLevelInfo,
+	})
 }
 
 func (r *Runtime) isExitCommand(value string) bool {

@@ -151,6 +151,237 @@ func TestPlanExecutionLoopPausesForHumanInput(t *testing.T) {
 	}
 }
 
+func TestPlanExecutionLoopHandsFreeCompletes(t *testing.T) {
+	t.Parallel()
+
+	plan := PlanResponse{
+		Message:           "All tasks are complete.",
+		Reasoning:         "No outstanding work remains.",
+		RequireHumanInput: false,
+		Plan:              []PlanStep{},
+	}
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("failed to marshal plan: %v", err)
+	}
+
+	completion := chatCompletionResponse{Choices: []struct {
+		Message struct {
+			ToolCalls []struct {
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"message"`
+	}{{}}}
+	completion.Choices[0].Message.ToolCalls = []struct {
+		ID       string `json:"id"`
+		Function struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"function"`
+	}{{ID: "call-1"}}
+	completion.Choices[0].Message.ToolCalls[0].Function.Name = schema.ToolName
+	completion.Choices[0].Message.ToolCalls[0].Function.Arguments = string(planJSON)
+
+	body, err := json.Marshal(completion)
+	if err != nil {
+		t.Fatalf("failed to marshal completion: %v", err)
+	}
+
+	transport := &stubTransport{body: body, statusCode: http.StatusOK}
+
+	client, err := NewOpenAIClient("test-key", "gpt-4o", "")
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	client.httpClient = &http.Client{Transport: transport}
+
+	rt := &Runtime{
+		options: RuntimeOptions{
+			Model:        "gpt-4o",
+			OutputBuffer: 16,
+			OutputWriter: io.Discard,
+			HandsFree:    true,
+		},
+		inputs:    make(chan InputEvent, 1),
+		outputs:   make(chan RuntimeEvent, 16),
+		closed:    make(chan struct{}),
+		plan:      NewPlanManager(),
+		client:    client,
+		executor:  NewCommandExecutor(),
+		history:   []ChatMessage{{Role: RoleSystem, Content: "system"}},
+		agentName: "main",
+	}
+
+	ctx := context.Background()
+	rt.planExecutionLoop(ctx)
+
+	t.Cleanup(func() {
+		_ = os.Remove("history.json")
+	})
+
+	if transport.calls != 1 {
+		t.Fatalf("expected a single plan request, got %d", transport.calls)
+	}
+
+	select {
+	case <-rt.closed:
+	default:
+		t.Fatalf("expected runtime to close after hands-free completion")
+	}
+
+	var events []RuntimeEvent
+	for evt := range rt.outputs {
+		events = append(events, evt)
+	}
+
+	if len(events) == 0 {
+		t.Fatalf("expected events to be emitted")
+	}
+
+	if events[len(events)-1].Type != EventTypeStatus || !strings.Contains(events[len(events)-1].Message, "Hands-free session complete") {
+		t.Fatalf("expected final hands-free completion status, got %+v", events[len(events)-1])
+	}
+
+	for _, evt := range events {
+		if evt.Type == EventTypeRequestInput {
+			t.Fatalf("unexpected request_input event in hands-free mode: %+v", evt)
+		}
+	}
+}
+
+func TestPlanExecutionLoopHandsFreeStopsAtPassLimit(t *testing.T) {
+	t.Parallel()
+
+	zero := 0
+	plan := PlanResponse{
+		Message:           "Continuing work.",
+		Reasoning:         "Execute the next command.",
+		RequireHumanInput: false,
+		Plan: []PlanStep{{
+			ID:           "step-1",
+			Title:        "Run noop",
+			Status:       PlanPending,
+			WaitingForID: []string{},
+			Command: CommandDraft{
+				Reason:      "Hands-free execution",
+				Shell:       "agent",
+				Run:         "noop",
+				TimeoutSec:  60,
+				FilterRegex: "",
+				TailLines:   200,
+				MaxBytes:    16384,
+			},
+		}},
+	}
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("failed to marshal plan: %v", err)
+	}
+
+	completion := chatCompletionResponse{Choices: []struct {
+		Message struct {
+			ToolCalls []struct {
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"message"`
+	}{{}}}
+	completion.Choices[0].Message.ToolCalls = []struct {
+		ID       string `json:"id"`
+		Function struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"function"`
+	}{{ID: "call-2"}}
+	completion.Choices[0].Message.ToolCalls[0].Function.Name = schema.ToolName
+	completion.Choices[0].Message.ToolCalls[0].Function.Arguments = string(planJSON)
+
+	body, err := json.Marshal(completion)
+	if err != nil {
+		t.Fatalf("failed to marshal completion: %v", err)
+	}
+
+	transport := &stubTransport{body: body, statusCode: http.StatusOK}
+
+	client, err := NewOpenAIClient("test-key", "gpt-4o", "")
+	if err != nil {
+		t.Fatalf("failed to create client: %v", err)
+	}
+	client.httpClient = &http.Client{Transport: transport}
+
+	executor := NewCommandExecutor()
+	if err := executor.RegisterInternalCommand("noop", func(ctx context.Context, req InternalCommandRequest) (PlanObservationPayload, error) {
+		return PlanObservationPayload{Summary: "noop", ExitCode: &zero}, nil
+	}); err != nil {
+		t.Fatalf("failed to register internal command: %v", err)
+	}
+
+	rt := &Runtime{
+		options: RuntimeOptions{
+			Model:        "gpt-4o",
+			OutputBuffer: 16,
+			OutputWriter: io.Discard,
+			HandsFree:    true,
+			MaxPasses:    1,
+		},
+		inputs:    make(chan InputEvent, 1),
+		outputs:   make(chan RuntimeEvent, 16),
+		closed:    make(chan struct{}),
+		plan:      NewPlanManager(),
+		client:    client,
+		executor:  executor,
+		history:   []ChatMessage{{Role: RoleSystem, Content: "system"}},
+		agentName: "main",
+	}
+
+	ctx := context.Background()
+	rt.planExecutionLoop(ctx)
+
+	t.Cleanup(func() {
+		_ = os.Remove("history.json")
+	})
+
+	if transport.calls != 1 {
+		t.Fatalf("expected a single plan request before hitting pass limit, got %d", transport.calls)
+	}
+
+	select {
+	case <-rt.closed:
+	default:
+		t.Fatalf("expected runtime to close after exceeding pass limit")
+	}
+
+	var events []RuntimeEvent
+	for evt := range rt.outputs {
+		events = append(events, evt)
+	}
+
+	if len(events) == 0 {
+		t.Fatalf("expected events to be emitted")
+	}
+
+	final := events[len(events)-1]
+	if final.Type != EventTypeError || !strings.Contains(final.Message, "Maximum pass limit") {
+		t.Fatalf("expected final error about pass limit, got %+v", final)
+	}
+	if final.Metadata == nil || final.Metadata["max_passes"] != 1 {
+		t.Fatalf("expected metadata to include max_passes, got %+v", final.Metadata)
+	}
+
+	for _, evt := range events {
+		if evt.Type == EventTypeRequestInput {
+			t.Fatalf("unexpected request_input event in hands-free mode: %+v", evt)
+		}
+	}
+}
+
 func TestPlanningHistorySnapshotCompactsHistory(t *testing.T) {
 	t.Parallel()
 

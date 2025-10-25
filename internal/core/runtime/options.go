@@ -17,6 +17,9 @@ type RuntimeOptions struct {
 	ReasoningEffort     string
 	SystemPromptAugment string
 	AmnesiaAfterPasses  int
+	HandsFree           bool
+	HandsFreeTopic      string
+	MaxPasses           int
 
 	// MaxContextTokens defines the soft cap for the conversation history. When
 	// the estimated usage exceeds CompactWhenPercent of this value, older
@@ -67,7 +70,10 @@ func (o *RuntimeOptions) setDefaults() {
 
 	if o.AmnesiaAfterPasses < 0 {
 		o.AmnesiaAfterPasses = 0
-  }
+	}
+	if o.MaxPasses < 0 {
+		o.MaxPasses = 0
+	}
 	if o.MaxContextTokens <= 0 || o.CompactWhenPercent <= 0 {
 		if budget, ok := defaultModelContextBudgets[strings.ToLower(o.Model)]; ok {
 			if o.MaxContextTokens <= 0 {
@@ -98,6 +104,9 @@ func (o *RuntimeOptions) setDefaults() {
 	}
 	if len(o.ExitCommands) == 0 {
 		o.ExitCommands = []string{"exit", "quit", "/exit", "/quit"}
+	}
+	if o.HandsFree && strings.TrimSpace(o.HandsFreeTopic) == "" {
+		o.HandsFreeTopic = "Hands-free session"
 	}
 }
 
