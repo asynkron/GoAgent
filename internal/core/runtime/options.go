@@ -46,6 +46,10 @@ type RuntimeOptions struct {
 	// ExitCommands are matched (case insensitive) by the default input
 	// reader to trigger a graceful shutdown.
 	ExitCommands []string
+
+	// InternalCommands registers agent scoped commands that bypass the host
+	// shell. The key is the command name, matched case-insensitively.
+	InternalCommands map[string]InternalCommandHandler
 }
 
 // setDefaults applies reasonable defaults that match the behaviour of the

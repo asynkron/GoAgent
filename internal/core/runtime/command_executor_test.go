@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -94,5 +96,94 @@ func TestEnforceObservationLimit(t *testing.T) {
 	}
 	if !strings.HasSuffix(payload.Stderr, "bbbbb") {
 		t.Fatalf("expected stderr to retain tail of original data")
+	}
+}
+
+func TestCommandExecutorExecuteInternal(t *testing.T) {
+	t.Parallel()
+
+	executor := NewCommandExecutor()
+	if err := executor.RegisterInternalCommand("beep", func(ctx context.Context, req InternalCommandRequest) (PlanObservationPayload, error) {
+		if req.Name != "beep" {
+			return PlanObservationPayload{}, fmt.Errorf("unexpected name %q", req.Name)
+		}
+		if len(req.Positionals) != 1 {
+			return PlanObservationPayload{}, fmt.Errorf("unexpected positional args: %v", req.Positionals)
+		}
+		if req.Positionals[0] != int64(123) {
+			return PlanObservationPayload{}, fmt.Errorf("unexpected positional value %#v", req.Positionals[0])
+		}
+		if req.Args["message"] != "hello world" {
+			return PlanObservationPayload{}, fmt.Errorf("unexpected named value: %v", req.Args)
+		}
+		if req.Step.ID != "step-1" {
+			return PlanObservationPayload{}, fmt.Errorf("unexpected step id %q", req.Step.ID)
+		}
+		return PlanObservationPayload{Stdout: "beep beep"}, nil
+	}); err != nil {
+		t.Fatalf("failed to register internal command: %v", err)
+	}
+
+	step := PlanStep{ID: "step-1", Command: CommandDraft{Shell: "agent", Run: `beep 123 message="hello world"`}}
+	payload, err := executor.Execute(context.Background(), step)
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+	if payload.Stdout != "beep beep" {
+		t.Fatalf("unexpected stdout %q", payload.Stdout)
+	}
+	if payload.ExitCode == nil || *payload.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %v", payload.ExitCode)
+	}
+}
+
+func TestCommandExecutorExecuteInternalUnknown(t *testing.T) {
+	t.Parallel()
+
+	executor := NewCommandExecutor()
+	step := PlanStep{ID: "step-1", Command: CommandDraft{Shell: "agent", Run: "noop"}}
+	_, err := executor.Execute(context.Background(), step)
+	if err == nil || !strings.Contains(err.Error(), "unknown internal command") {
+		t.Fatalf("expected unknown command error, got %v", err)
+	}
+}
+
+func TestParseInternalInvocation(t *testing.T) {
+	t.Parallel()
+
+	step := PlanStep{ID: "x", Command: CommandDraft{Run: `echo 42 value=3.14 flag=true text="hello world"`}}
+	req, err := parseInternalInvocation(step)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Name != "echo" {
+		t.Fatalf("unexpected name %q", req.Name)
+	}
+	wantPositionals := []any{int64(42)}
+	if !reflect.DeepEqual(req.Positionals, wantPositionals) {
+		t.Fatalf("positionals mismatch: got %#v want %#v", req.Positionals, wantPositionals)
+	}
+	if req.Args["flag"] != true {
+		t.Fatalf("expected flag true, got %#v", req.Args["flag"])
+	}
+	if req.Args["value"] != 3.14 {
+		t.Fatalf("expected value 3.14, got %#v", req.Args["value"])
+	}
+	if req.Args["text"] != "hello world" {
+		t.Fatalf("expected text 'hello world', got %#v", req.Args["text"])
+	}
+}
+
+func TestTokenizeInternalCommandErrors(t *testing.T) {
+	t.Parallel()
+
+	_, err := tokenizeInternalCommand("echo \"unterminated")
+	if err == nil || !strings.Contains(err.Error(), "unmatched quote") {
+		t.Fatalf("expected unmatched quote error, got %v", err)
+	}
+
+	_, err = tokenizeInternalCommand("echo \\")
+	if err == nil || !strings.Contains(err.Error(), "unfinished escape sequence") {
+		t.Fatalf("expected unfinished escape error, got %v", err)
 	}
 }
