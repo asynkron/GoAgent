@@ -26,7 +26,7 @@ go rt.Run(context.Background())
 rt.SubmitPrompt("Hello")
 
 for event := range rt.Outputs() {
-    fmt.Println(event.Type, event.Message)
+fmt.Println(event.Type, event.Message)
 }
 ```
 
