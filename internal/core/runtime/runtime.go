@@ -646,6 +646,9 @@ func (r *Runtime) recordPlanResponse(plan *PlanResponse, toolCall ToolCall) int 
 		"tool_name":           toolCall.Name,
 		"require_human_input": plan.RequireHumanInput,
 	}
+	if strings.TrimSpace(plan.Reasoning) != "" {
+		planMetadata["reasoning"] = plan.Reasoning
+	}
 
 	r.emit(RuntimeEvent{
 		Type:    EventTypeStatus,
