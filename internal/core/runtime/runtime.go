@@ -30,6 +30,9 @@ type Runtime struct {
 
 	historyMu sync.RWMutex
 	history   []ChatMessage
+
+	passMu    sync.Mutex
+	passCount int
 }
 
 // NewRuntime configures a new runtime with the provided options.

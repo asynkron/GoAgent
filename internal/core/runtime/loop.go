@@ -162,6 +162,13 @@ func (r *Runtime) planExecutionLoop(ctx context.Context) {
 			return
 		}
 
+		pass := r.incrementPassCount()
+		r.emit(RuntimeEvent{
+			Type:    EventTypeStatus,
+			Message: fmt.Sprintf("Starting plan execution pass #%d.", pass),
+			Level:   StatusLevelInfo,
+		})
+
 		plan, toolCall, err := r.requestPlan(ctx)
 		if err != nil {
 			r.emit(RuntimeEvent{
@@ -294,6 +301,14 @@ func (r *Runtime) isWorking() bool {
 	r.workMu.Lock()
 	defer r.workMu.Unlock()
 	return r.working
+}
+
+// incrementPassCount increments the session pass counter and returns the latest total.
+func (r *Runtime) incrementPassCount() int {
+	r.passMu.Lock()
+	defer r.passMu.Unlock()
+	r.passCount++
+	return r.passCount
 }
 
 func (r *Runtime) consumeInput(ctx context.Context) error {
