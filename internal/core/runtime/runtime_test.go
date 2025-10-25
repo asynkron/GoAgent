@@ -197,3 +197,53 @@ func TestComputeValidationBackoff(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordPlanResponseFiltersCompletedSteps(t *testing.T) {
+	t.Parallel()
+
+	rt := &Runtime{
+		plan:    NewPlanManager(),
+		outputs: make(chan RuntimeEvent, 10),
+		closed:  make(chan struct{}),
+		history: []ChatMessage{},
+	}
+
+	resp := &PlanResponse{
+		Message: "ack",
+		Plan: []PlanStep{
+			{ID: "step-done", Status: PlanCompleted},
+			{ID: "step-pending", Status: PlanPending, WaitingForID: []string{"step-done"}},
+			{ID: "step-blocked", Status: PlanPending, WaitingForID: []string{"step-done", "step-pending"}},
+		},
+	}
+
+	execCount := rt.recordPlanResponse(resp, ToolCall{ID: "call-test", Name: "open-agent"})
+
+	if execCount != 1 {
+		t.Fatalf("expected executable count 1, got %d", execCount)
+	}
+
+	snapshot := rt.plan.Snapshot()
+	if got := len(snapshot); got != 2 {
+		t.Fatalf("expected plan snapshot length 2, got %d", got)
+	}
+	if snapshot[0].ID != "step-pending" {
+		t.Fatalf("expected first remaining step to be step-pending, got %s", snapshot[0].ID)
+	}
+	if snapshot[0].Status != PlanPending {
+		t.Fatalf("expected step-pending status pending, got %s", snapshot[0].Status)
+	}
+	if snapshot[0].WaitingForID != nil {
+		t.Fatalf("expected dependencies on completed step to be removed, got %v", snapshot[0].WaitingForID)
+	}
+
+	if snapshot[1].ID != "step-blocked" {
+		t.Fatalf("expected second remaining step to be step-blocked, got %s", snapshot[1].ID)
+	}
+	if snapshot[1].Status != PlanPending {
+		t.Fatalf("expected step-blocked status pending, got %s", snapshot[1].Status)
+	}
+	if want := []string{"step-pending"}; len(snapshot[1].WaitingForID) != len(want) || snapshot[1].WaitingForID[0] != want[0] {
+		t.Fatalf("expected dependencies %v, got %v", want, snapshot[1].WaitingForID)
+	}
+}
