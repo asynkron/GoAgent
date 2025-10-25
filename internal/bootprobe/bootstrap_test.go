@@ -1,4 +1,4 @@
-package main
+package bootprobe
 
 import (
 	"os"
@@ -7,11 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/asynkron/goagent/internal/bootprobe"
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildBootProbeAugmentationIncludesSummary(t *testing.T) {
+func TestBuildAugmentationIncludesSummary(t *testing.T) {
 	dir := t.TempDir()
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
@@ -28,8 +27,8 @@ func TestBuildBootProbeAugmentationIncludesSummary(t *testing.T) {
 		}
 	}
 
-	ctx := bootprobe.NewContextWithLookPath(dir, lookup)
-	result, summary, combined := buildBootProbeAugmentation(ctx, "user supplied guidance")
+	ctx := NewContextWithLookPath(dir, lookup)
+	result, summary, combined := BuildAugmentation(ctx, "user supplied guidance")
 
 	require.True(t, result.HasCapabilities())
 	require.NotEmpty(t, summary)
