@@ -162,6 +162,102 @@ func TestComputeValidationBackoff(t *testing.T) {
 	}
 }
 
+func TestHandleInputCancelCancelsActivePlan(t *testing.T) {
+	rt := &Runtime{
+		plan:     NewPlanManager(),
+		executor: NewCommandExecutor(),
+		outputs:  make(chan RuntimeEvent, 10),
+		closed:   make(chan struct{}),
+		history:  []ChatMessage{},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	rt.setActivePlanContext(ctx, cancel)
+
+	if err := rt.handleInput(context.Background(), InputEvent{Type: InputTypeCancel, Reason: "please stop"}); err != nil {
+		t.Fatalf("handleInput returned error: %v", err)
+	}
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatalf("expected plan context to be canceled")
+	}
+
+	if !rt.planCanceledByUser() {
+		t.Fatalf("expected cancel request to be recorded")
+	}
+
+	rt.clearActivePlanContext()
+}
+
+func TestExecutePendingCommands_RecordsCancellation(t *testing.T) {
+	rt := &Runtime{
+		plan:     NewPlanManager(),
+		executor: NewCommandExecutor(),
+		outputs:  make(chan RuntimeEvent, 10),
+		closed:   make(chan struct{}),
+		history:  []ChatMessage{},
+	}
+
+	started := make(chan struct{})
+	if err := rt.executor.RegisterInternalCommand("wait", func(ctx context.Context, _ InternalCommandRequest) (PlanObservationPayload, error) {
+		close(started)
+		<-ctx.Done()
+		return PlanObservationPayload{}, ctx.Err()
+	}); err != nil {
+		t.Fatalf("failed to register internal command: %v", err)
+	}
+
+	rt.plan.Replace([]PlanStep{{
+		ID:      "step-1",
+		Title:   "Blocking step",
+		Status:  PlanPending,
+		Command: CommandDraft{Shell: agentShell, Run: "wait"},
+	}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	rt.setActivePlanContext(ctx, cancel)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-started:
+			rt.cancelActivePlan()
+		case <-time.After(2 * time.Second):
+			t.Errorf("command did not start in time")
+			rt.cancelActivePlan()
+		}
+	}()
+
+	rt.executePendingCommands(ctx, ToolCall{ID: "call-cancel", Name: "open-agent"})
+
+	<-done
+
+	history := rt.historySnapshot()
+	if got := len(history); got != 1 {
+		t.Fatalf("expected one history entry, got %d", got)
+	}
+
+	var payload PlanObservationPayload
+	if err := json.Unmarshal([]byte(history[0].Content), &payload); err != nil {
+		t.Fatalf("failed to decode history payload: %v", err)
+	}
+
+	if !payload.OperationCanceled {
+		t.Fatalf("expected operation to be marked canceled")
+	}
+	if !payload.CanceledByHuman {
+		t.Fatalf("expected cancellation to be attributed to the user")
+	}
+	if payload.Summary == "" {
+		t.Fatalf("expected summary to describe cancellation outcome")
+	}
+
+	rt.clearActivePlanContext()
+}
+
 func TestRecordPlanResponseFiltersCompletedSteps(t *testing.T) {
 	t.Parallel()
 

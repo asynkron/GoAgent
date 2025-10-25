@@ -35,6 +35,11 @@ type Runtime struct {
 	executor  *CommandExecutor
 	commandMu sync.Mutex
 
+	planCtxMu           sync.Mutex
+	planCtx             context.Context
+	planCancel          context.CancelFunc
+	planCancelRequested bool
+
 	workMu  sync.Mutex
 	working bool
 
@@ -132,6 +137,71 @@ func (r *Runtime) enqueue(evt InputEvent) {
 	}
 }
 
+func (r *Runtime) setActivePlanContext(ctx context.Context, cancel context.CancelFunc) {
+	r.planCtxMu.Lock()
+	defer r.planCtxMu.Unlock()
+	r.planCtx = ctx
+	r.planCancel = cancel
+	r.planCancelRequested = false
+}
+
+func (r *Runtime) clearActivePlanContext() {
+	r.planCtxMu.Lock()
+	cancel := r.planCancel
+	r.planCtx = nil
+	r.planCancel = nil
+	r.planCancelRequested = false
+	r.planCtxMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (r *Runtime) cancelActivePlan() bool {
+	r.planCtxMu.Lock()
+	cancel := r.planCancel
+	if cancel != nil {
+		r.planCancelRequested = true
+	}
+	r.planCtxMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+func (r *Runtime) planCanceledByUser() bool {
+	r.planCtxMu.Lock()
+	defer r.planCtxMu.Unlock()
+	return r.planCancelRequested
+}
+
+func (r *Runtime) emitPlanCancellationStatus(err error) {
+	if !errors.Is(err, context.Canceled) {
+		return
+	}
+
+	metadata := map[string]any{}
+	message := "Plan execution canceled."
+	if r.planCanceledByUser() {
+		metadata["canceled_by"] = "user"
+		message = "Plan execution canceled by user."
+	}
+
+	r.emit(RuntimeEvent{
+		Type:     EventTypeStatus,
+		Message:  message,
+		Level:    StatusLevelWarn,
+		Metadata: metadata,
+	})
+	r.emit(RuntimeEvent{
+		Type:    EventTypeRequestInput,
+		Message: "Execution canceled. Ready for the next instruction.",
+		Level:   StatusLevelInfo,
+	})
+}
+
 // Run starts the runtime loop and optionally bridges stdin/stdout to the
 // respective channels so the binary is immediately useful in a terminal.
 func (r *Runtime) Run(ctx context.Context) error {
@@ -214,10 +284,32 @@ func (r *Runtime) handleInput(ctx context.Context, evt InputEvent) error {
 	case InputTypePrompt:
 		return r.handlePrompt(ctx, evt)
 	case InputTypeCancel:
+		reason := strings.TrimSpace(evt.Reason)
 		r.emit(RuntimeEvent{
 			Type:    EventTypeStatus,
-			Message: fmt.Sprintf("Cancel requested: %s", strings.TrimSpace(evt.Reason)),
+			Message: fmt.Sprintf("Cancel requested: %s", reason),
 			Level:   StatusLevelWarn,
+			Metadata: map[string]any{
+				"reason": reason,
+			},
+		})
+
+		if r.cancelActivePlan() {
+			r.emit(RuntimeEvent{
+				Type:    EventTypeStatus,
+				Message: "Active plan cancellation initiated.",
+				Level:   StatusLevelWarn,
+				Metadata: map[string]any{
+					"reason": reason,
+				},
+			})
+			return nil
+		}
+
+		r.emit(RuntimeEvent{
+			Type:    EventTypeStatus,
+			Message: "No active plan execution to cancel.",
+			Level:   StatusLevelInfo,
 		})
 		r.emit(RuntimeEvent{
 			Type:    EventTypeRequestInput,
@@ -262,7 +354,6 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 		})
 		return nil
 	}
-	defer r.endWork()
 
 	r.emit(RuntimeEvent{
 		Type:    EventTypeStatus,
@@ -273,19 +364,30 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 	userMessage := ChatMessage{Role: RoleUser, Content: prompt, Timestamp: time.Now()}
 	r.appendHistory(userMessage)
 
-	r.planExecutionLoop(ctx)
+	planCtx, cancel := context.WithCancel(ctx)
+	r.setActivePlanContext(planCtx, cancel)
+
+	go func() {
+		defer r.endWork()
+		r.planExecutionLoop(planCtx)
+	}()
 
 	return nil
 }
 
 func (r *Runtime) planExecutionLoop(ctx context.Context) {
 	for {
-		if ctx.Err() != nil {
+		if err := ctx.Err(); err != nil {
+			r.emitPlanCancellationStatus(err)
 			return
 		}
 
 		plan, toolCall, err := r.requestPlan(ctx)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				r.emitPlanCancellationStatus(err)
+				return
+			}
 			r.emit(RuntimeEvent{
 				Type:    EventTypeError,
 				Message: fmt.Sprintf("Failed to contact OpenAI: %v", err),
@@ -347,7 +449,8 @@ func (r *Runtime) planExecutionLoop(ctx context.Context) {
 		}
 
 		r.executePendingCommands(ctx, toolCall)
-		if ctx.Err() != nil {
+		if err := ctx.Err(); err != nil {
+			r.emitPlanCancellationStatus(err)
 			return
 		}
 	}
@@ -852,8 +955,19 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 		payload.Details = lastObservation.Details
 	}
 
+	if errors.Is(finalErr, context.Canceled) {
+		payload.OperationCanceled = true
+		if r.planCanceledByUser() {
+			payload.CanceledByHuman = true
+		}
+	}
+
 	if payload.Summary == "" {
 		switch {
+		case errors.Is(finalErr, context.Canceled) && executedSteps == 0:
+			payload.Summary = "Plan execution canceled before any steps ran."
+		case errors.Is(finalErr, context.Canceled):
+			payload.Summary = fmt.Sprintf("Plan execution canceled during step %s.", lastStepID)
 		case executedSteps == 0 && finalErr != nil:
 			payload.Summary = "Failed before executing plan steps."
 		case executedSteps == 0:
@@ -908,6 +1022,7 @@ func (r *Runtime) endWork() {
 	r.workMu.Lock()
 	r.working = false
 	r.workMu.Unlock()
+	r.clearActivePlanContext()
 }
 
 func (r *Runtime) isWorking() bool {
