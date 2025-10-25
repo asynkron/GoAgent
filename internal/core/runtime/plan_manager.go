@@ -75,21 +75,7 @@ func (pm *PlanManager) Ready() (*PlanStep, bool) {
 
 	for _, id := range pm.order {
 		step := pm.steps[id]
-		if step == nil || step.Status != PlanPending || step.Executing {
-			continue
-		}
-		ready := true
-		for _, waitID := range step.WaitingForID {
-			dep := pm.steps[waitID]
-			if dep == nil {
-				continue
-			}
-			if dep.Status != PlanCompleted {
-				ready = false
-				break
-			}
-		}
-		if ready {
+		if pm.stepReadyLocked(step) {
 			step.Executing = true
 			copied := *step
 			return &copied, true
@@ -106,28 +92,30 @@ func (pm *PlanManager) ExecutableCount() int {
 	count := 0
 	for _, id := range pm.order {
 		step := pm.steps[id]
-		if step == nil || step.Status != PlanPending || step.Executing {
-			continue
-		}
-
-		ready := true
-		for _, waitID := range step.WaitingForID {
-			dep := pm.steps[waitID]
-			if dep == nil {
-				continue
-			}
-			if dep.Status != PlanCompleted {
-				ready = false
-				break
-			}
-		}
-
-		if ready {
+		if pm.stepReadyLocked(step) {
 			count++
 		}
 	}
 
 	return count
+}
+
+func (pm *PlanManager) stepReadyLocked(step *PlanStep) bool {
+	if step == nil || step.Status != PlanPending || step.Executing {
+		return false
+	}
+
+	for _, waitID := range step.WaitingForID {
+		dep := pm.steps[waitID]
+		if dep == nil {
+			continue
+		}
+		if dep.Status != PlanCompleted {
+			return false
+		}
+	}
+
+	return true
 }
 
 // UpdateStatus updates the step status while preserving metadata.
