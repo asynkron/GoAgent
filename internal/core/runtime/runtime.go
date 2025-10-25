@@ -292,6 +292,9 @@ func (r *Runtime) planExecutionLoop(ctx context.Context, initialPlan *PlanRespon
 		if plan.RequireHumanInput {
 			// The assistant explicitly requested help from the human, so surface the
 			// request and pause automated execution until the user responds.
+			r.appendToolObservation(toolCall, PlanObservationPayload{
+				Summary: "Assistant requested additional input before continuing the plan.",
+			})
 			r.emit(RuntimeEvent{
 				Type:    EventTypeRequestInput,
 				Message: "Assistant requested additional input before continuing.",
@@ -301,6 +304,9 @@ func (r *Runtime) planExecutionLoop(ctx context.Context, initialPlan *PlanRespon
 		}
 
 		if execCount == 0 {
+			r.appendToolObservation(toolCall, PlanObservationPayload{
+				Summary: "Assistant returned a plan without executable steps.",
+			})
 			r.emit(RuntimeEvent{
 				Type:    EventTypeStatus,
 				Message: "Plan has no executable steps.",
@@ -699,6 +705,34 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 			return
 		}
 	}
+}
+
+func (r *Runtime) appendToolObservation(toolCall ToolCall, payload PlanObservationPayload) {
+	if toolCall.ID == "" {
+		return
+	}
+
+	if payload.Plan == nil {
+		payload.Plan = r.plan.SortOrder()
+	}
+
+	toolMessage, err := BuildToolMessage(payload)
+	if err != nil {
+		r.emit(RuntimeEvent{
+			Type:    EventTypeError,
+			Message: fmt.Sprintf("Failed to encode tool observation: %v", err),
+			Level:   StatusLevelError,
+		})
+		return
+	}
+
+	r.appendHistory(ChatMessage{
+		Role:       RoleTool,
+		Content:    toolMessage,
+		ToolCallID: toolCall.ID,
+		Name:       toolCall.Name,
+		Timestamp:  time.Now(),
+	})
 }
 
 func (r *Runtime) consumeInput(ctx context.Context) error {
