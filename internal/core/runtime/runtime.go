@@ -288,6 +288,18 @@ func (r *Runtime) planExecutionLoop(ctx context.Context, initialPlan *PlanRespon
 		}
 
 		execCount := r.recordPlanResponse(plan, toolCall)
+
+		if plan.RequireHumanInput {
+			// The assistant explicitly requested help from the human, so surface the
+			// request and pause automated execution until the user responds.
+			r.emit(RuntimeEvent{
+				Type:    EventTypeRequestInput,
+				Message: "Assistant requested additional input before continuing.",
+				Level:   StatusLevelInfo,
+			})
+			return
+		}
+
 		if execCount == 0 {
 			r.emit(RuntimeEvent{
 				Type:    EventTypeStatus,
@@ -548,9 +560,10 @@ func (r *Runtime) recordPlanResponse(plan *PlanResponse, toolCall ToolCall) int 
 	r.plan.Replace(plan.Plan)
 
 	planMetadata := map[string]any{
-		"plan":         plan.Plan,
-		"tool_call_id": toolCall.ID,
-		"tool_name":    toolCall.Name,
+		"plan":                plan.Plan,
+		"tool_call_id":        toolCall.ID,
+		"tool_name":           toolCall.Name,
+		"require_human_input": plan.RequireHumanInput,
 	}
 
 	r.emit(RuntimeEvent{
