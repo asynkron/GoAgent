@@ -85,6 +85,7 @@ type PlanStep struct {
 
 // PlanResponse captures the structured assistant output.
 type PlanResponse struct {
-	Message string     `json:"message"`
-	Plan    []PlanStep `json:"plan"`
+	Message           string     `json:"message"`
+	Plan              []PlanStep `json:"plan"`
+	RequireHumanInput bool       `json:"requireHumanInput"`
 }

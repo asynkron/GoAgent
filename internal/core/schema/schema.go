@@ -111,6 +111,11 @@ const planResponseSchemaJSON = `{
           }
         }
       }
+    },
+    "requireHumanInput": {
+      "type": "boolean",
+      "description": "Set true when the assistant needs additional direction from the human before continuing execution.",
+      "default": false
     }
   }
 }`
