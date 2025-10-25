@@ -208,6 +208,10 @@ the "run" part of the command allows you to run shell commands.
 ## execution environment and sandbox
 You are not in a sandbox, you have full access to run any command.
 
+## response format
+The assistant response should be using markdown format.
+
+
 `
 
 func buildSystemPrompt(augment string) string {
