@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/joho/godotenv"
 
@@ -48,14 +50,15 @@ func main() {
 	}
 
 	options := runtime.RuntimeOptions{
-		APIKey:              apiKey,
-		Model:               *model,
-		ReasoningEffort:     *reasoningEffort,
-		AutoApprove:         *autoApprove,
-		NoHuman:             *noHuman,
-		SystemPromptAugment: *promptAugmentation,
-		PlanReminderMessage: *planReminder,
-		NoHumanAutoMessage:  *autoMessage,
+		APIKey:                  apiKey,
+		Model:                   *model,
+		ReasoningEffort:         *reasoningEffort,
+		AutoApprove:             *autoApprove,
+		NoHuman:                 *noHuman,
+		SystemPromptAugment:     *promptAugmentation,
+		PlanReminderMessage:     *planReminder,
+		NoHumanAutoMessage:      *autoMessage,
+		DisableOutputForwarding: true,
 	}
 
 	agent, err := runtime.NewRuntime(options)
@@ -64,8 +67,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	// Stream runtime events so users can inspect status updates and command output.
+	go func() {
+		defer wg.Done()
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetEscapeHTML(false)
+		encoder.SetIndent("", "  ")
+		for evt := range agent.Outputs() {
+			if err := encoder.Encode(evt); err != nil {
+				fmt.Fprintf(os.Stderr, "failed to encode runtime event: %v\n", err)
+			}
+		}
+	}()
+
 	if err := agent.Run(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "runtime error: %v\n", err)
 		os.Exit(1)
 	}
+
+	wg.Wait()
 }

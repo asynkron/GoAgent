@@ -25,11 +25,20 @@ type Runtime struct {
 	closeOnce sync.Once
 	closed    chan struct{}
 
-	plan   *PlanManager
-	client *OpenAIClient
+	plan     *PlanManager
+	client   *OpenAIClient
+	executor *CommandExecutor
 
 	historyMu sync.RWMutex
 	history   []ChatMessage
+
+	executingMu sync.Mutex
+	executing   map[string]struct{}
+
+	commandTrigger chan struct{}
+
+	toolCallMu      sync.RWMutex
+	currentToolCall *ToolCall
 }
 
 // NewRuntime configures a new runtime with the provided options.
@@ -51,13 +60,16 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 	}}
 
 	rt := &Runtime{
-		options: options,
-		inputs:  make(chan InputEvent, options.InputBuffer),
-		outputs: make(chan RuntimeEvent, options.OutputBuffer),
-		closed:  make(chan struct{}),
-		plan:    NewPlanManager(),
-		client:  client,
-		history: initialHistory,
+		options:        options,
+		inputs:         make(chan InputEvent, options.InputBuffer),
+		outputs:        make(chan RuntimeEvent, options.OutputBuffer),
+		closed:         make(chan struct{}),
+		plan:           NewPlanManager(),
+		client:         client,
+		executor:       NewCommandExecutor(),
+		history:        initialHistory,
+		executing:      make(map[string]struct{}),
+		commandTrigger: make(chan struct{}, 1),
 	}
 
 	return rt, nil
@@ -108,6 +120,12 @@ func (r *Runtime) Run(ctx context.Context) error {
 	defer cancel()
 
 	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		r.commandWorker(ctx)
+	}()
 
 	if !r.options.DisableOutputForwarding {
 		wg.Add(1)
@@ -272,13 +290,16 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 		r.appendHistory(toolMessage)
 	}
 
+	r.setCurrentToolCall(toolCall)
 	r.plan.Replace(plan.Plan)
+	r.triggerCommandWorker()
 
 	planMetadata := map[string]any{
 		"plan":         plan.Plan,
 		"tool_call_id": toolCall.ID,
 		"tool_name":    toolCall.Name,
 	}
+	planMetadata["auto_execute"] = len(plan.Plan) > 0
 
 	r.emit(RuntimeEvent{
 		Type:    EventTypeStatus,
@@ -303,6 +324,223 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 	})
 
 	return nil
+}
+
+// commandWorker waits for plan execution signals and runs ready steps.
+func (r *Runtime) commandWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-r.closed:
+			return
+		case <-r.commandTrigger:
+			r.processReadySteps(ctx)
+		}
+	}
+}
+
+// processReadySteps drains the queue of ready plan steps and executes them sequentially.
+func (r *Runtime) processReadySteps(ctx context.Context) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+
+		step, ok := r.plan.Ready()
+		if !ok {
+			return
+		}
+
+		if !r.markExecuting(step.ID) {
+			continue
+		}
+
+		r.executePlanStep(ctx, step)
+	}
+}
+
+// executePlanStep runs a single plan step and records the observation metadata.
+func (r *Runtime) executePlanStep(ctx context.Context, step *PlanStep) {
+	defer r.finishExecuting(step.ID)
+
+	if err := ctx.Err(); err != nil {
+		return
+	}
+
+	command := strings.TrimSpace(step.Command.Run)
+	shell := strings.TrimSpace(step.Command.Shell)
+
+	baseMetadata := map[string]any{
+		"step_id": step.ID,
+		"title":   step.Title,
+		"command": command,
+		"shell":   shell,
+	}
+	if len(step.WaitingForID) > 0 {
+		baseMetadata["waiting_for"] = append([]string{}, step.WaitingForID...)
+	}
+	if reason := strings.TrimSpace(step.Command.Reason); reason != "" {
+		baseMetadata["reason"] = reason
+	}
+	if cwd := strings.TrimSpace(step.Command.Cwd); cwd != "" {
+		baseMetadata["cwd"] = cwd
+	}
+
+	startMetadata := make(map[string]any, len(baseMetadata))
+	for k, v := range baseMetadata {
+		startMetadata[k] = v
+	}
+
+	r.emit(RuntimeEvent{
+		Type:     EventTypeStatus,
+		Message:  fmt.Sprintf("Executing plan step %s…", step.ID),
+		Level:    StatusLevelInfo,
+		Metadata: startMetadata,
+	})
+
+	observation, err := r.executor.Execute(ctx, *step)
+	status := PlanCompleted
+	message := fmt.Sprintf("Plan step %s completed successfully.", step.ID)
+	level := StatusLevelInfo
+	eventType := EventTypeStatus
+
+	if err != nil {
+		status = PlanFailed
+		message = fmt.Sprintf("Plan step %s failed: %v", step.ID, err)
+		level = StatusLevelError
+		eventType = EventTypeError
+	}
+
+	resultMetadata := make(map[string]any, len(baseMetadata)+4)
+	for k, v := range baseMetadata {
+		resultMetadata[k] = v
+	}
+	if observation.ExitCode != nil {
+		resultMetadata["exit_code"] = *observation.ExitCode
+	}
+	resultMetadata["stdout"] = observation.Stdout
+	resultMetadata["stderr"] = observation.Stderr
+	resultMetadata["truncated"] = observation.Truncated
+	if observation.Details != "" {
+		resultMetadata["details"] = observation.Details
+	}
+
+	planObservation := &PlanObservation{ObservationForLLM: &observation}
+	if updateErr := r.plan.UpdateStatus(step.ID, status, planObservation); updateErr != nil {
+		r.emit(RuntimeEvent{
+			Type:    EventTypeError,
+			Message: fmt.Sprintf("Failed to update plan status for %s: %v", step.ID, updateErr),
+			Level:   StatusLevelError,
+		})
+		return
+	}
+
+	observation.Plan = r.plan.Snapshot()
+	r.appendObservationToHistory(observation)
+
+	r.emit(RuntimeEvent{
+		Type:     eventType,
+		Message:  message,
+		Level:    level,
+		Metadata: resultMetadata,
+	})
+
+	if !r.plan.HasPending() {
+		var summary string
+		if r.plan.Completed() {
+			summary = "Plan execution completed successfully."
+		} else {
+			summary = "Plan execution finished with issues. Review the observations to decide the next action."
+		}
+		r.emit(RuntimeEvent{
+			Type:    EventTypeStatus,
+			Message: summary,
+			Level:   StatusLevelInfo,
+		})
+		r.emit(RuntimeEvent{
+			Type:    EventTypeRequestInput,
+			Message: "Ready for the next instruction.",
+			Level:   StatusLevelInfo,
+		})
+	}
+}
+
+// markExecuting guards against running the same plan step concurrently.
+func (r *Runtime) markExecuting(id string) bool {
+	r.executingMu.Lock()
+	defer r.executingMu.Unlock()
+
+	if _, exists := r.executing[id]; exists {
+		return false
+	}
+	r.executing[id] = struct{}{}
+	return true
+}
+
+func (r *Runtime) finishExecuting(id string) {
+	r.executingMu.Lock()
+	delete(r.executing, id)
+	r.executingMu.Unlock()
+}
+
+// triggerCommandWorker notifies the worker that ready steps may be available.
+func (r *Runtime) triggerCommandWorker() {
+	select {
+	case <-r.closed:
+		return
+	default:
+	}
+
+	select {
+	case r.commandTrigger <- struct{}{}:
+	default:
+	}
+}
+
+// setCurrentToolCall stores the latest tool call metadata so observations can be threaded correctly.
+func (r *Runtime) setCurrentToolCall(call ToolCall) {
+	r.toolCallMu.Lock()
+	defer r.toolCallMu.Unlock()
+
+	copy := call
+	r.currentToolCall = &copy
+}
+
+func (r *Runtime) currentToolCallSnapshot() (ToolCall, bool) {
+	r.toolCallMu.RLock()
+	defer r.toolCallMu.RUnlock()
+
+	if r.currentToolCall == nil {
+		return ToolCall{}, false
+	}
+	return *r.currentToolCall, true
+}
+
+// appendObservationToHistory records command output as a tool response for the next model turn.
+func (r *Runtime) appendObservationToHistory(observation PlanObservationPayload) {
+	call, ok := r.currentToolCallSnapshot()
+	if !ok {
+		return
+	}
+
+	message, err := BuildToolMessage(observation)
+	if err != nil {
+		r.emit(RuntimeEvent{
+			Type:    EventTypeError,
+			Message: fmt.Sprintf("Failed to encode observation payload: %v", err),
+			Level:   StatusLevelError,
+		})
+		return
+	}
+
+	r.appendHistory(ChatMessage{
+		Role:       RoleTool,
+		Content:    message,
+		ToolCallID: call.ID,
+		Name:       call.Name,
+		Timestamp:  time.Now(),
+	})
 }
 
 func (r *Runtime) consumeInput(ctx context.Context) error {
