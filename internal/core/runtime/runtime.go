@@ -35,6 +35,8 @@ type Runtime struct {
 	passCount int
 
 	agentName string
+
+	contextBudget ContextBudget
 }
 
 // NewRuntime configures a new runtime with the provided options.
@@ -57,15 +59,16 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 	}}
 
 	rt := &Runtime{
-		options:   options,
-		inputs:    make(chan InputEvent, options.InputBuffer),
-		outputs:   make(chan RuntimeEvent, options.OutputBuffer),
-		closed:    make(chan struct{}),
-		plan:      NewPlanManager(),
-		client:    client,
-		executor:  NewCommandExecutor(),
-		history:   initialHistory,
-		agentName: "main",
+		options:       options,
+		inputs:        make(chan InputEvent, options.InputBuffer),
+		outputs:       make(chan RuntimeEvent, options.OutputBuffer),
+		closed:        make(chan struct{}),
+		plan:          NewPlanManager(),
+		client:        client,
+		executor:      NewCommandExecutor(),
+		history:       initialHistory,
+		agentName:     "main",
+		contextBudget: ContextBudget{MaxTokens: options.MaxContextTokens, CompactWhenPercent: options.CompactWhenPercent},
 	}
 
 	for name, handler := range options.InternalCommands {
