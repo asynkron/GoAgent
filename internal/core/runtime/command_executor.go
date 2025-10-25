@@ -9,24 +9,71 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const maxObservationBytes = 50 * 1024
 
-// CommandExecutor runs shell commands described by plan steps.
-type CommandExecutor struct{}
+const agentShell = "agent"
+
+// InternalCommandHandler executes agent scoped commands that are not forwarded to the
+// host shell. Implementations can inspect the parsed arguments and return a
+// PlanObservationPayload describing the outcome.
+type InternalCommandHandler func(ctx context.Context, req InternalCommandRequest) (PlanObservationPayload, error)
+
+// InternalCommandRequest represents a parsed internal command invocation.
+type InternalCommandRequest struct {
+	// Name is the normalized command identifier.
+	Name string
+	// Raw contains the original run string after trimming whitespace.
+	Raw string
+	// Args stores named arguments (key=value pairs) parsed from the run string.
+	Args map[string]any
+	// Positionals stores ordered positional arguments parsed from the run string.
+	Positionals []any
+	// Step contains the original plan step for reference.
+	Step PlanStep
+}
+
+// CommandExecutor runs shell commands described by plan steps and also supports
+// a registry of agent internal commands that bypass the OS shell.
+type CommandExecutor struct {
+	internal map[string]InternalCommandHandler
+}
 
 // NewCommandExecutor builds the default executor that shells out using exec.CommandContext.
 func NewCommandExecutor() *CommandExecutor {
-	return &CommandExecutor{}
+	return &CommandExecutor{internal: make(map[string]InternalCommandHandler)}
+}
+
+// RegisterInternalCommand installs a handler for the provided command name. Names are
+// matched case-insensitively and must be non-empty.
+func (e *CommandExecutor) RegisterInternalCommand(name string, handler InternalCommandHandler) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return errors.New("internal command: name must be non-empty")
+	}
+	if handler == nil {
+		return errors.New("internal command: handler must not be nil")
+	}
+	if e.internal == nil {
+		e.internal = make(map[string]InternalCommandHandler)
+	}
+	e.internal[strings.ToLower(trimmed)] = handler
+	return nil
 }
 
 // Execute runs the provided command and returns stdout/stderr observations.
 func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObservationPayload, error) {
 	if strings.TrimSpace(step.Command.Shell) == "" || strings.TrimSpace(step.Command.Run) == "" {
 		return PlanObservationPayload{}, fmt.Errorf("command: invalid shell or run for step %s", step.ID)
+	}
+
+	if strings.EqualFold(strings.TrimSpace(step.Command.Shell), agentShell) {
+		return e.executeInternal(ctx, step)
 	}
 
 	execCmd, err := buildShellCommand(ctx, step.Command.Shell, step.Command.Run)
@@ -102,6 +149,133 @@ func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObser
 	}
 
 	return observation, runErr
+}
+
+func (e *CommandExecutor) executeInternal(ctx context.Context, step PlanStep) (PlanObservationPayload, error) {
+	invocation, err := parseInternalInvocation(step)
+	if err != nil {
+		return PlanObservationPayload{}, fmt.Errorf("command: %w", err)
+	}
+
+	handler, ok := e.internal[invocation.Name]
+	if !ok {
+		return PlanObservationPayload{}, fmt.Errorf("command: unknown internal command %q", invocation.Name)
+	}
+
+	payload, execErr := handler(ctx, invocation)
+	if execErr != nil {
+		if payload.Details == "" {
+			payload.Details = execErr.Error()
+		}
+		return payload, execErr
+	}
+	if payload.ExitCode == nil {
+		zero := 0
+		payload.ExitCode = &zero
+	}
+	return payload, nil
+}
+
+func parseInternalInvocation(step PlanStep) (InternalCommandRequest, error) {
+	run := strings.TrimSpace(step.Command.Run)
+	tokens, err := tokenizeInternalCommand(run)
+	if err != nil {
+		return InternalCommandRequest{}, err
+	}
+	if len(tokens) == 0 {
+		return InternalCommandRequest{}, errors.New("internal command: missing command name")
+	}
+
+	name := strings.ToLower(tokens[0])
+	args := make(map[string]any)
+	var positionals []any
+	for _, token := range tokens[1:] {
+		key, value, found := strings.Cut(token, "=")
+		if found && strings.TrimSpace(key) != "" {
+			args[strings.TrimSpace(key)] = parseInternalValue(value)
+			continue
+		}
+		positionals = append(positionals, parseInternalValue(token))
+	}
+
+	return InternalCommandRequest{
+		Name:        name,
+		Raw:         run,
+		Args:        args,
+		Positionals: positionals,
+		Step:        step,
+	}, nil
+}
+
+func tokenizeInternalCommand(input string) ([]string, error) {
+	var (
+		tokens  []string
+		current strings.Builder
+		quote   rune
+		escape  bool
+	)
+
+	flush := func() {
+		if current.Len() > 0 {
+			tokens = append(tokens, current.String())
+			current.Reset()
+		}
+	}
+
+	for _, r := range input {
+		switch {
+		case escape:
+			current.WriteRune(r)
+			escape = false
+		case r == '\\':
+			escape = true
+		case quote != 0:
+			if r == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+		case r == '\'' || r == '"':
+			quote = r
+		case unicode.IsSpace(r):
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	if escape {
+		return nil, errors.New("internal command: unfinished escape sequence")
+	}
+	if quote != 0 {
+		return nil, errors.New("internal command: unmatched quote")
+	}
+	flush()
+	return tokens, nil
+}
+
+func parseInternalValue(raw string) any {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(trimmed)
+	if lower == "true" {
+		return true
+	}
+	if lower == "false" {
+		return false
+	}
+
+	if i, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
+		return i
+	}
+	if f, err := strconv.ParseFloat(trimmed, 64); err == nil {
+		return f
+	}
+
+	return trimmed
 }
 
 func applyFilter(output []byte, pattern string) []byte {

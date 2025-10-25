@@ -72,6 +72,12 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		history:  initialHistory,
 	}
 
+	for name, handler := range options.InternalCommands {
+		if err := rt.executor.RegisterInternalCommand(name, handler); err != nil {
+			return nil, err
+		}
+	}
+
 	return rt, nil
 }
 
