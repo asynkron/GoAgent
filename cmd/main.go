@@ -19,7 +19,7 @@ import (
 func main() {
 	defaultModel := os.Getenv("OPENAI_MODEL")
 	if defaultModel == "" {
-		defaultModel = "gpt-4.1"
+		defaultModel = "gpt-5"
 	}
 
 	defaultReasoning := os.Getenv("OPENAI_REASONING_EFFORT")
