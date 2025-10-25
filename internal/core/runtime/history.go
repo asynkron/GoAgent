@@ -20,9 +20,8 @@ func (r *Runtime) appendHistory(message ChatMessage) {
 func (r *Runtime) historySnapshot() []ChatMessage {
 	r.historyMu.RLock()
 	defer r.historyMu.RUnlock()
-	copyHistory := make([]ChatMessage, len(r.history))
-	copy(copyHistory, r.history)
-	return copyHistory
+
+	return append([]ChatMessage(nil), r.history...)
 }
 
 // planningHistorySnapshot prepares the history for a plan request. It compacts
@@ -40,9 +39,7 @@ func (r *Runtime) planningHistorySnapshot() []ChatMessage {
 		}
 	}
 
-	copyHistory := make([]ChatMessage, len(r.history))
-	copy(copyHistory, r.history)
-	return copyHistory
+	return append([]ChatMessage(nil), r.history...)
 }
 
 func (r *Runtime) writeHistoryLog(history []ChatMessage) {
