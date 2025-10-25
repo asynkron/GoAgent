@@ -33,6 +33,9 @@ type Runtime struct {
 	executor  *CommandExecutor
 	commandMu sync.Mutex
 
+	workMu  sync.Mutex
+	working bool
+
 	historyMu sync.RWMutex
 	history   []ChatMessage
 }
@@ -87,6 +90,14 @@ func (r *Runtime) Outputs() <-chan RuntimeEvent {
 
 // SubmitPrompt is a convenience wrapper that enqueues a prompt input.
 func (r *Runtime) SubmitPrompt(prompt string) {
+	if r.isWorking() {
+		r.emit(RuntimeEvent{
+			Type:    EventTypeStatus,
+			Message: "Agent is currently executing a plan. Please wait before submitting another prompt.",
+			Level:   StatusLevelWarn,
+		})
+		return
+	}
 	r.enqueue(InputEvent{Type: InputTypePrompt, Prompt: prompt})
 }
 
@@ -235,6 +246,16 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 		return nil
 	}
 
+	if !r.beginWork() {
+		r.emit(RuntimeEvent{
+			Type:    EventTypeStatus,
+			Message: "Agent is already processing another prompt.",
+			Level:   StatusLevelWarn,
+		})
+		return nil
+	}
+	defer r.endWork()
+
 	r.emit(RuntimeEvent{
 		Type:    EventTypeStatus,
 		Message: fmt.Sprintf("Processing prompt with model %s…", r.options.Model),
@@ -244,32 +265,29 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 	userMessage := ChatMessage{Role: RoleUser, Content: prompt, Timestamp: time.Now()}
 	r.appendHistory(userMessage)
 
-	plan, toolCall, err := r.requestPlan(ctx)
-	if err != nil {
-		r.emit(RuntimeEvent{
-			Type:    EventTypeError,
-			Message: fmt.Sprintf("Failed to contact OpenAI: %v", err),
-			Level:   StatusLevelError,
-		})
-		r.emit(RuntimeEvent{
-			Type:    EventTypeRequestInput,
-			Message: "You can provide another prompt.",
-			Level:   StatusLevelInfo,
-		})
-		return nil
-	}
-
-	go r.planExecutionLoop(ctx, plan, toolCall)
+	r.planExecutionLoop(ctx)
 
 	return nil
 }
 
-func (r *Runtime) planExecutionLoop(ctx context.Context, initialPlan *PlanResponse, initialToolCall ToolCall) {
-	plan := initialPlan
-	toolCall := initialToolCall
-
+func (r *Runtime) planExecutionLoop(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
+			return
+		}
+
+		plan, toolCall, err := r.requestPlan(ctx)
+		if err != nil {
+			r.emit(RuntimeEvent{
+				Type:    EventTypeError,
+				Message: fmt.Sprintf("Failed to contact OpenAI: %v", err),
+				Level:   StatusLevelError,
+			})
+			r.emit(RuntimeEvent{
+				Type:    EventTypeRequestInput,
+				Message: "You can provide another prompt.",
+				Level:   StatusLevelInfo,
+			})
 			return
 		}
 
@@ -324,24 +342,6 @@ func (r *Runtime) planExecutionLoop(ctx context.Context, initialPlan *PlanRespon
 		if ctx.Err() != nil {
 			return
 		}
-
-		nextPlan, nextToolCall, err := r.requestPlan(ctx)
-		if err != nil {
-			r.emit(RuntimeEvent{
-				Type:    EventTypeError,
-				Message: fmt.Sprintf("Failed to contact OpenAI: %v", err),
-				Level:   StatusLevelError,
-			})
-			r.emit(RuntimeEvent{
-				Type:    EventTypeRequestInput,
-				Message: "You can provide another prompt.",
-				Level:   StatusLevelInfo,
-			})
-			return
-		}
-
-		plan = nextPlan
-		toolCall = nextToolCall
 	}
 }
 
@@ -823,6 +823,28 @@ func (r *Runtime) appendToolObservation(toolCall ToolCall, payload PlanObservati
 		Name:       toolCall.Name,
 		Timestamp:  time.Now(),
 	})
+}
+
+func (r *Runtime) beginWork() bool {
+	r.workMu.Lock()
+	defer r.workMu.Unlock()
+	if r.working {
+		return false
+	}
+	r.working = true
+	return true
+}
+
+func (r *Runtime) endWork() {
+	r.workMu.Lock()
+	r.working = false
+	r.workMu.Unlock()
+}
+
+func (r *Runtime) isWorking() bool {
+	r.workMu.Lock()
+	defer r.workMu.Unlock()
+	return r.working
 }
 
 func (r *Runtime) consumeInput(ctx context.Context) error {
