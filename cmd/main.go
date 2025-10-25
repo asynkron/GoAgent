@@ -55,7 +55,7 @@ func main() {
 	}
 
 	probeCtx := bootprobe.NewContext(cwd)
-	probeResult, probeSummary, combinedAugment := buildBootProbeAugmentation(probeCtx, *promptAugmentation)
+	probeResult, probeSummary, combinedAugment := bootprobe.BuildAugmentation(probeCtx, *promptAugmentation)
 	if probeResult.HasCapabilities() && probeSummary != "" {
 		fmt.Fprintln(os.Stdout, probeSummary)
 		fmt.Fprintln(os.Stdout)
