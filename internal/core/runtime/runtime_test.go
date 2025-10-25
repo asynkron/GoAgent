@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -254,5 +255,129 @@ func TestRuntimeEmitAnnotatesEvent(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for overridden event")
+	}
+}
+
+func TestRuntimeHistoryAmnesia(t *testing.T) {
+	t.Parallel()
+
+	rt := &Runtime{
+		options: RuntimeOptions{AmnesiaAfterPasses: 2},
+		history: []ChatMessage{},
+	}
+
+	if pass := rt.incrementPassCount(); pass != 1 {
+		t.Fatalf("expected first pass to be 1, got %d", pass)
+	}
+
+	assistantContent := strings.Repeat("A", 1024)
+	rt.appendHistory(ChatMessage{
+		Role:      RoleAssistant,
+		Content:   assistantContent,
+		Timestamp: time.Now(),
+		ToolCalls: []ToolCall{{ID: "tool-old", Name: "open-agent", Arguments: strings.Repeat("B", 1024)}},
+	})
+
+	if pass := rt.incrementPassCount(); pass != 2 {
+		t.Fatalf("expected second pass to be 2, got %d", pass)
+	}
+
+	toolPayload := PlanObservationPayload{
+		Summary: "Executed planned commands.",
+		Stdout:  strings.Repeat("S", 1024),
+		Stderr:  strings.Repeat("E", 1024),
+		PlanObservation: []StepObservation{{
+			ID:      "step-1",
+			Status:  PlanCompleted,
+			Stdout:  "step output",
+			Stderr:  "step error",
+			Details: "Detailed output about the step.",
+		}},
+	}
+	toolContent, err := BuildToolMessage(toolPayload)
+	if err != nil {
+		t.Fatalf("failed to build tool message: %v", err)
+	}
+
+	rt.appendHistory(ChatMessage{
+		Role:       RoleTool,
+		Content:    toolContent,
+		ToolCallID: "tool-old",
+		Timestamp:  time.Now(),
+	})
+
+	if pass := rt.incrementPassCount(); pass != 3 {
+		t.Fatalf("expected third pass to be 3, got %d", pass)
+	}
+
+	rt.appendHistory(ChatMessage{Role: RoleUser, Content: "fresh input", Timestamp: time.Now()})
+
+	if pass := rt.incrementPassCount(); pass != 4 {
+		t.Fatalf("expected fourth pass to be 4, got %d", pass)
+	}
+
+	latestAssistant := "Latest assistant message"
+	rt.appendHistory(ChatMessage{Role: RoleAssistant, Content: latestAssistant, Timestamp: time.Now()})
+
+	history := rt.historySnapshot()
+	if got := len(history); got != 4 {
+		t.Fatalf("expected 4 history entries, got %d", got)
+	}
+
+	oldAssistant := history[0]
+	if oldAssistant.Role != RoleAssistant {
+		t.Fatalf("expected first history entry to be assistant, got %s", oldAssistant.Role)
+	}
+	if oldAssistant.Pass != 1 {
+		t.Fatalf("expected assistant pass to remain 1, got %d", oldAssistant.Pass)
+	}
+	if oldAssistant.Content == assistantContent {
+		t.Fatalf("expected assistant content to be truncated by amnesia")
+	}
+	if len(oldAssistant.Content) == 0 {
+		t.Fatalf("expected assistant content to retain a short summary")
+	}
+	if len(oldAssistant.ToolCalls) == 0 {
+		t.Fatalf("expected assistant tool calls to remain present")
+	}
+	if oldAssistant.ToolCalls[0].Arguments == strings.Repeat("B", 1024) {
+		t.Fatalf("expected assistant tool call arguments to be truncated")
+	}
+
+	oldTool := history[1]
+	if oldTool.Pass != 2 {
+		t.Fatalf("expected tool message pass to remain 2, got %d", oldTool.Pass)
+	}
+	var sanitized PlanObservationPayload
+	if err := json.Unmarshal([]byte(oldTool.Content), &sanitized); err != nil {
+		t.Fatalf("failed to decode sanitized tool content: %v", err)
+	}
+	if sanitized.Stdout != "" || sanitized.Stderr != "" {
+		t.Fatalf("expected tool stdout/stderr to be cleared, got %q / %q", sanitized.Stdout, sanitized.Stderr)
+	}
+	if len(sanitized.PlanObservation) == 0 {
+		t.Fatalf("expected plan observation entries to remain present")
+	}
+	if sanitized.PlanObservation[0].Stdout != "" || sanitized.PlanObservation[0].Stderr != "" {
+		t.Fatalf("expected nested stdout/stderr to be cleared, got %q / %q", sanitized.PlanObservation[0].Stdout, sanitized.PlanObservation[0].Stderr)
+	}
+	if sanitized.Summary != toolPayload.Summary {
+		t.Fatalf("expected tool summary to remain, got %q", sanitized.Summary)
+	}
+	if sanitized.PlanObservation[0].Details == "" {
+		t.Fatalf("expected step details to retain a short description")
+	}
+
+	recentUser := history[2]
+	if recentUser.Role != RoleUser {
+		t.Fatalf("expected third entry to be user, got %s", recentUser.Role)
+	}
+	if recentUser.Content != "fresh input" {
+		t.Fatalf("expected user content to remain unchanged, got %q", recentUser.Content)
+	}
+
+	freshAssistant := history[3]
+	if freshAssistant.Content != latestAssistant {
+		t.Fatalf("expected most recent assistant content to remain untouched")
 	}
 }

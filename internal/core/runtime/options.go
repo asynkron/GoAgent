@@ -15,6 +15,7 @@ type RuntimeOptions struct {
 	Model               string
 	ReasoningEffort     string
 	SystemPromptAugment string
+	AmnesiaAfterPasses  int
 
 	// InputBuffer controls the capacity of the input channel. The default is
 	// tuned for interactive usage where only a handful of messages are
@@ -53,6 +54,9 @@ type RuntimeOptions struct {
 func (o *RuntimeOptions) setDefaults() {
 	if o.Model == "" {
 		o.Model = "gpt-4.1"
+	}
+	if o.AmnesiaAfterPasses < 0 {
+		o.AmnesiaAfterPasses = 0
 	}
 	if o.InputBuffer <= 0 {
 		o.InputBuffer = 4

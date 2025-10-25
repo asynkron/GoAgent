@@ -20,6 +20,7 @@ type ChatMessage struct {
 	Name       string
 	Timestamp  time.Time
 	ToolCalls  []ToolCall
+	Pass       int
 }
 
 // ToolCall stores metadata for an assistant tool invocation.

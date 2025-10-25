@@ -53,6 +53,7 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		Role:      RoleSystem,
 		Content:   buildSystemPrompt(options.SystemPromptAugment),
 		Timestamp: time.Now(),
+		Pass:      0,
 	}}
 
 	rt := &Runtime{
