@@ -595,11 +595,18 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 	r.commandMu.Lock()
 	defer r.commandMu.Unlock()
 
+	var (
+		executedSteps   int
+		lastStepID      string
+		lastObservation PlanObservationPayload
+		haveObservation bool
+		finalErr        error
+	)
+
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
+		if ctx.Err() != nil {
+			finalErr = ctx.Err()
+			break
 		}
 
 		step, ok := r.plan.Ready()
@@ -611,7 +618,7 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 					Level:   StatusLevelInfo,
 				})
 			}
-			return
+			break
 		}
 
 		title := strings.TrimSpace(step.Title)
@@ -634,8 +641,12 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 
 		observation, err := r.executor.Execute(ctx, *step)
 		if ctx.Err() != nil {
-			return
+			finalErr = ctx.Err()
+			break
 		}
+
+		executedSteps++
+		lastStepID = step.ID
 
 		status := PlanCompleted
 		level := StatusLevelInfo
@@ -643,10 +654,11 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 		if err != nil {
 			status = PlanFailed
 			level = StatusLevelError
-			if observation.Details == "" && err != nil {
+			if observation.Details == "" {
 				observation.Details = err.Error()
 			}
 			message = fmt.Sprintf("Step %s failed: %v", step.ID, err)
+			finalErr = err
 		}
 
 		planObservation := &PlanObservation{ObservationForLLM: &observation}
@@ -656,28 +668,13 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 				Message: fmt.Sprintf("Failed to update plan status for step %s: %v", step.ID, updateErr),
 				Level:   StatusLevelError,
 			})
-			return
+			finalErr = updateErr
+			break
 		}
 
 		observation.Plan = r.plan.SortOrder()
-
-		if toolCall.ID != "" {
-			if toolMessage, buildErr := BuildToolMessage(observation); buildErr != nil {
-				r.emit(RuntimeEvent{
-					Type:    EventTypeError,
-					Message: fmt.Sprintf("Failed to encode tool observation for step %s: %v", step.ID, buildErr),
-					Level:   StatusLevelError,
-				})
-			} else {
-				r.appendHistory(ChatMessage{
-					Role:       RoleTool,
-					Content:    toolMessage,
-					ToolCallID: toolCall.ID,
-					Name:       toolCall.Name,
-					Timestamp:  time.Now(),
-				})
-			}
-		}
+		lastObservation = observation
+		haveObservation = true
 
 		metadata := map[string]any{
 			"step_id":   step.ID,
@@ -702,9 +699,30 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 		})
 
 		if err != nil {
-			return
+			break
 		}
 	}
+
+	payload := PlanObservationPayload{Plan: r.plan.SortOrder()}
+	if haveObservation {
+		payload = lastObservation
+		payload.Plan = r.plan.SortOrder()
+	}
+
+	if payload.Summary == "" {
+		switch {
+		case executedSteps == 0 && finalErr != nil:
+			payload.Summary = "Failed before executing plan steps."
+		case executedSteps == 0:
+			payload.Summary = "No plan steps were executed."
+		case finalErr != nil:
+			payload.Summary = fmt.Sprintf("Execution halted during step %s.", lastStepID)
+		default:
+			payload.Summary = fmt.Sprintf("Executed %d plan step(s).", executedSteps)
+		}
+	}
+
+	r.appendToolObservation(toolCall, payload)
 }
 
 func (r *Runtime) appendToolObservation(toolCall ToolCall, payload PlanObservationPayload) {
