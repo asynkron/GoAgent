@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/joho/godotenv"
 
+	"github.com/asynkron/goagent/internal/bootprobe"
 	"github.com/asynkron/goagent/internal/core/runtime"
 )
 
@@ -47,11 +48,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to determine working directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	probeCtx := bootprobe.NewContext(cwd)
+	probeResult, probeSummary, combinedAugment := buildBootProbeAugmentation(probeCtx, *promptAugmentation)
+	if probeResult.HasCapabilities() && probeSummary != "" {
+		fmt.Fprintln(os.Stdout, probeSummary)
+		fmt.Fprintln(os.Stdout)
+	}
+
 	options := runtime.RuntimeOptions{
 		APIKey:                  apiKey,
 		Model:                   *model,
 		ReasoningEffort:         *reasoningEffort,
-		SystemPromptAugment:     *promptAugmentation,
+		SystemPromptAugment:     combinedAugment,
 		DisableOutputForwarding: true,
 	}
 
