@@ -14,11 +14,7 @@ type RuntimeOptions struct {
 	APIKey              string
 	Model               string
 	ReasoningEffort     string
-	AutoApprove         bool
-	NoHuman             bool
 	SystemPromptAugment string
-	PlanReminderMessage string
-	NoHumanAutoMessage  string
 
 	// InputBuffer controls the capacity of the input channel. The default is
 	// tuned for interactive usage where only a handful of messages are
@@ -57,12 +53,6 @@ type RuntimeOptions struct {
 func (o *RuntimeOptions) setDefaults() {
 	if o.Model == "" {
 		o.Model = "gpt-4.1"
-	}
-	if o.PlanReminderMessage == "" {
-		o.PlanReminderMessage = "Plan is waiting for user input."
-	}
-	if o.NoHumanAutoMessage == "" {
-		o.NoHumanAutoMessage = "No human available to continue."
 	}
 	if o.InputBuffer <= 0 {
 		o.InputBuffer = 4
