@@ -17,7 +17,7 @@ const planResponseSchemaJSON = `{
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "additionalProperties": false,
-  "required": ["message", "plan"],
+  "required": ["message", "plan", "requireHumanInput"],
   "properties": {
     "message": {
       "type": "string",
