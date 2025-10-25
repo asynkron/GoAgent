@@ -360,7 +360,7 @@ func (r *Runtime) requestPlan(ctx context.Context) (*PlanResponse, ToolCall, err
 	for {
 		history := r.historySnapshot()
 
-		_, toolCall, err := r.client.RequestPlan(ctx, history)
+		toolCall, err := r.client.RequestPlan(ctx, history)
 		if err != nil {
 			return nil, ToolCall{}, err
 		}

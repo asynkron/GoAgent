@@ -47,9 +47,10 @@ func NewOpenAIClient(apiKey, model, reasoning string) (*OpenAIClient, error) {
 	}, nil
 }
 
-// RequestPlan sends the accumulated chat history to OpenAI and returns the raw
-// tool call payload so the runtime can perform validation before decoding it.
-func (c *OpenAIClient) RequestPlan(ctx context.Context, history []ChatMessage) (string, ToolCall, error) {
+// RequestPlan sends the accumulated chat history to OpenAI and returns the
+// resulting tool call payload so the runtime can perform validation before
+// decoding it.
+func (c *OpenAIClient) RequestPlan(ctx context.Context, history []ChatMessage) (ToolCall, error) {
 	payload := chatCompletionRequest{
 		Model:    c.model,
 		Messages: buildMessages(history),
@@ -74,43 +75,43 @@ func (c *OpenAIClient) RequestPlan(ctx context.Context, history []ChatMessage) (
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", ToolCall{}, fmt.Errorf("openai: encode request: %w", err)
+		return ToolCall{}, fmt.Errorf("openai: encode request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
 	if err != nil {
-		return "", ToolCall{}, fmt.Errorf("openai: build request: %w", err)
+		return ToolCall{}, fmt.Errorf("openai: build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", ToolCall{}, fmt.Errorf("openai: do request: %w", err)
+		return ToolCall{}, fmt.Errorf("openai: do request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		return "", ToolCall{}, fmt.Errorf("openai: status %s: %s", resp.Status, string(msg))
+		return ToolCall{}, fmt.Errorf("openai: status %s: %s", resp.Status, string(msg))
 	}
 
 	var completion chatCompletionResponse
 	decoder := json.NewDecoder(resp.Body)
 	if err := decoder.Decode(&completion); err != nil {
-		return "", ToolCall{}, fmt.Errorf("openai: decode response: %w", err)
+		return ToolCall{}, fmt.Errorf("openai: decode response: %w", err)
 	}
 
 	if len(completion.Choices) == 0 {
-		return "", ToolCall{}, errors.New("openai: response contained no choices")
+		return ToolCall{}, errors.New("openai: response contained no choices")
 	}
 	choice := completion.Choices[0]
 	if len(choice.Message.ToolCalls) == 0 {
-		return "", ToolCall{}, errors.New("openai: assistant did not call the tool")
+		return ToolCall{}, errors.New("openai: assistant did not call the tool")
 	}
 
 	toolCall := choice.Message.ToolCalls[0]
-	return toolCall.Function.Arguments, ToolCall{
+	return ToolCall{
 		ID:        toolCall.ID,
 		Name:      toolCall.Function.Name,
 		Arguments: toolCall.Function.Arguments,

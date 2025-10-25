@@ -53,7 +53,7 @@ func TestRequestPlanIncludesResponseFormat(t *testing.T) {
 	client.httpClient = server.Client()
 
 	history := []ChatMessage{{Role: RoleUser, Content: "hi"}}
-	_, _, err = client.RequestPlan(context.Background(), history)
+	_, err = client.RequestPlan(context.Background(), history)
 	if err != nil {
 		t.Fatalf("RequestPlan returned error: %v", err)
 	}
