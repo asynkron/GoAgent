@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -15,6 +16,14 @@ type RuntimeOptions struct {
 	Model               string
 	ReasoningEffort     string
 	SystemPromptAugment string
+
+	// MaxContextTokens defines the soft cap for the conversation history. When
+	// the estimated usage exceeds CompactWhenPercent of this value, older
+	// messages are summarized to stay within the budget.
+	MaxContextTokens int
+	// CompactWhenPercent controls when the compactor kicks in. Values are in
+	// the 0-1 range (e.g. 0.85 triggers when the history is ~85% full).
+	CompactWhenPercent float64
 
 	// InputBuffer controls the capacity of the input channel. The default is
 	// tuned for interactive usage where only a handful of messages are
@@ -53,6 +62,22 @@ type RuntimeOptions struct {
 func (o *RuntimeOptions) setDefaults() {
 	if o.Model == "" {
 		o.Model = "gpt-4.1"
+	}
+	if o.MaxContextTokens <= 0 || o.CompactWhenPercent <= 0 {
+		if budget, ok := defaultModelContextBudgets[strings.ToLower(o.Model)]; ok {
+			if o.MaxContextTokens <= 0 {
+				o.MaxContextTokens = budget.MaxTokens
+			}
+			if o.CompactWhenPercent <= 0 {
+				o.CompactWhenPercent = budget.CompactWhenPercent
+			}
+		}
+	}
+	if o.MaxContextTokens <= 0 {
+		o.MaxContextTokens = 128000
+	}
+	if o.CompactWhenPercent <= 0 {
+		o.CompactWhenPercent = 0.85
 	}
 	if o.InputBuffer <= 0 {
 		o.InputBuffer = 4
