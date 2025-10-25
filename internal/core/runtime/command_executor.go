@@ -26,7 +26,12 @@ func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObser
 	if strings.TrimSpace(step.Command.Shell) == "" || strings.TrimSpace(step.Command.Run) == "" {
 		return PlanObservationPayload{}, fmt.Errorf("command: invalid shell or run for step %s", step.ID)
 	}
-	cmd := exec.CommandContext(ctx, step.Command.Shell, "-c", step.Command.Run)
+
+	execCmd, err := buildShellCommand(ctx, step.Command.Shell, step.Command.Run)
+	if err != nil {
+		return PlanObservationPayload{}, fmt.Errorf("command: %w", err)
+	}
+	cmd := execCmd
 	if step.Command.Cwd != "" {
 		cmd.Dir = step.Command.Cwd
 	}
@@ -134,6 +139,26 @@ func truncateOutput(output []byte, maxBytes, tailLines int) ([]byte, bool) {
 	}
 
 	return bytes.Join(lines, []byte("\n")), truncated
+}
+
+// buildShellCommand normalizes the shell string ("/bin/bash", "bash -lc", etc.)
+// before wiring it up with the user's command. Supporting embedded flags lets
+// us accept either the legacy "bash" input or newer "/bin/bash -lc" strings
+// returned by the assistant without failing at exec time.
+func buildShellCommand(ctx context.Context, shell, run string) (*exec.Cmd, error) {
+	parts := strings.Fields(shell)
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("invalid shell: %q", shell)
+	}
+
+	execPath := parts[0]
+	args := parts[1:]
+	if len(args) == 0 {
+		args = append(args, "-lc")
+	}
+
+	args = append(args, run)
+	return exec.CommandContext(ctx, execPath, args...), nil
 }
 
 // BuildToolMessage marshals the observation into a JSON string ready for tool messages.
