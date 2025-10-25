@@ -162,7 +162,16 @@ If your task is to run a command, once you know that task is completed, to not r
 The plan is a Directed Acyclic Graph (DAG) of steps that can be executed in parallel when possible, do not assume order of independent steps.
 If order is required, use the "waitingForID" field to create dependencies between steps.
 Use the "requireHumanInput" field to pause execution and request additional input from the user when necessary.
-Be concise and clear in your reasoning and plan steps.`
+Be concise and clear in your reasoning and plan steps.
+
+## diagrams
+Diagrams are drawn using Mermaid.js in markdown code blocks.
+Always make sure to quote mermaid syntax correctly. eg.:
+|"this is correct"|  vs, |this is not correct| vs, |""this is also not correct""|
+["this is correct"]  vs, [this is not correct] vs, [""this is also not correct""]
+Prefer LR orientation over TB/TD.
+
+`
 
 func buildSystemPrompt(augment string) string {
 	prompt := baseSystemPrompt
