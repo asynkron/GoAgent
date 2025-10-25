@@ -8,7 +8,7 @@ import (
 
 // Runtime is the Go counterpart to the TypeScript AgentRuntime. It exposes two
 // channels – Inputs and Outputs – that mirror the asynchronous queues used in
-// the original implementation. Inputs receives InputEvents, Outputs surfaces
+// the original implementation. Inputs receive InputEvents, Outputs surfaces
 // RuntimeEvents.
 type Runtime struct {
 	options RuntimeOptions
@@ -75,7 +75,7 @@ func (r *Runtime) Inputs() chan<- InputEvent {
 	return r.inputs
 }
 
-// Outputs exposes the outbound queue which delivers RuntimeEvents in order.
+// Outputs expose the outbound queue which delivers RuntimeEvents in order.
 func (r *Runtime) Outputs() <-chan RuntimeEvent {
 	return r.outputs
 }

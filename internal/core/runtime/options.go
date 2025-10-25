@@ -39,7 +39,7 @@ type RuntimeOptions struct {
 	// output channel. Zero means wait indefinitely.
 	EmitTimeout time.Duration
 
-	// ExitCommands are matched (case insensitive) by the default input
+	// ExitCommands are matched (case-insensitive) by the default input
 	// reader to trigger a graceful shutdown.
 	ExitCommands []string
 

@@ -11,7 +11,7 @@ import (
 )
 
 // Run starts the runtime loop and optionally bridges stdin/stdout to the
-// respective channels so the binary is immediately useful in a terminal.
+// respective channels, so the binary is immediately useful in a terminal.
 func (r *Runtime) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -337,7 +337,7 @@ func (r *Runtime) forwardOutputs(ctx context.Context) {
 			if !ok {
 				return
 			}
-			fmt.Fprintf(r.options.OutputWriter, "[%s] %s\n", evt.Type, evt.Message)
+			_, _ = fmt.Fprintf(r.options.OutputWriter, "[%s] %s\n", evt.Type, evt.Message)
 		}
 	}
 }
