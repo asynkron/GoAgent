@@ -15,16 +15,16 @@ import (
 
 // OpenAIClient wraps the HTTP client required to call the Chat Completions API.
 type OpenAIClient struct {
-	apiKey     string
-	model      string
-	reasoning  string
-	httpClient *http.Client
-	tool       schema.ToolDefinition
-	baseURL    string
+	apiKey          string
+	model           string
+	reasoningEffort string
+	httpClient      *http.Client
+	tool            schema.ToolDefinition
+	baseURL         string
 }
 
 // NewOpenAIClient configures the client with the provided API key and model identifier.
-func NewOpenAIClient(apiKey, model, reasoning string) (*OpenAIClient, error) {
+func NewOpenAIClient(apiKey, model, reasoningEffort string) (*OpenAIClient, error) {
 	if apiKey == "" {
 		return nil, errors.New("openai: API key is required")
 	}
@@ -36,9 +36,9 @@ func NewOpenAIClient(apiKey, model, reasoning string) (*OpenAIClient, error) {
 		return nil, err
 	}
 	return &OpenAIClient{
-		apiKey:    apiKey,
-		model:     model,
-		reasoning: reasoning,
+		apiKey:          apiKey,
+		model:           model,
+		reasoningEffort: reasoningEffort,
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},
@@ -69,8 +69,8 @@ func (c *OpenAIClient) RequestPlan(ctx context.Context, history []ChatMessage) (
 		},
 	}
 
-	if c.reasoning != "" {
-		payload.Reasoning = &reasoningOptions{Effort: c.reasoning}
+	if c.reasoningEffort != "" {
+		payload.ReasoningEffort = &c.reasoningEffort
 	}
 
 	body, err := json.Marshal(payload)
@@ -152,16 +152,12 @@ func buildMessages(history []ChatMessage) []chatMessage {
 // OpenAI Chat Completions API payloads. They allow us to construct the request
 // without pulling in a heavy client dependency.
 type chatCompletionRequest struct {
-	Model          string              `json:"model"`
-	Messages       []chatMessage       `json:"messages"`
-	Tools          []toolSpecification `json:"tools"`
-	ToolChoice     toolChoice          `json:"tool_choice"`
-	Reasoning      *reasoningOptions   `json:"reasoning,omitempty"`
-	ResponseFormat responseFormat      `json:"response_format"`
-}
-
-type reasoningOptions struct {
-	Effort string `json:"effort"`
+	Model           string              `json:"model"`
+	Messages        []chatMessage       `json:"messages"`
+	Tools           []toolSpecification `json:"tools"`
+	ToolChoice      toolChoice          `json:"tool_choice"`
+	ReasoningEffort *string             `json:"reasoning_effort,omitempty"`
+	ResponseFormat  responseFormat      `json:"response_format"`
 }
 
 type chatMessage struct {
