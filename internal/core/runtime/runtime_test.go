@@ -177,6 +177,76 @@ func TestExecutePendingCommands_FailureStillRecordsSingleToolMessage(t *testing.
 	}
 }
 
+func TestExecutePendingCommands_RunsReadyStepsInParallel(t *testing.T) {
+	t.Parallel()
+
+	rt := &Runtime{
+		plan:      NewPlanManager(),
+		executor:  NewCommandExecutor(),
+		outputs:   make(chan RuntimeEvent, 10),
+		closed:    make(chan struct{}),
+		history:   []ChatMessage{},
+		agentName: "main",
+	}
+
+	durations := map[string]time.Duration{
+		"step-a": 200 * time.Millisecond,
+		"step-b": 300 * time.Millisecond,
+	}
+
+	if err := rt.executor.RegisterInternalCommand("slow", func(ctx context.Context, req InternalCommandRequest) (PlanObservationPayload, error) {
+		// Sleep for the duration associated with the step to simulate work.
+		if d, ok := durations[req.Step.ID]; ok {
+			select {
+			case <-ctx.Done():
+				return PlanObservationPayload{}, ctx.Err()
+			case <-time.After(d):
+			}
+		}
+		return PlanObservationPayload{Stdout: "done"}, nil
+	}); err != nil {
+		t.Fatalf("failed to register internal command: %v", err)
+	}
+
+	rt.plan.Replace([]PlanStep{
+		{
+			ID:      "step-a",
+			Title:   "First",
+			Status:  PlanPending,
+			Command: CommandDraft{Shell: agentShell, Run: "slow"},
+		},
+		{
+			ID:      "step-b",
+			Title:   "Second",
+			Status:  PlanPending,
+			Command: CommandDraft{Shell: agentShell, Run: "slow"},
+		},
+	})
+
+	start := time.Now()
+	rt.executePendingCommands(context.Background(), ToolCall{ID: "call-parallel", Name: "open-agent"})
+	elapsed := time.Since(start)
+
+	sequential := durations["step-a"] + durations["step-b"]
+	if elapsed >= sequential-50*time.Millisecond {
+		t.Fatalf("expected parallel execution (<%v), got %v", sequential-50*time.Millisecond, elapsed)
+	}
+
+	history := rt.historySnapshot()
+	if len(history) != 1 {
+		t.Fatalf("expected one tool message, got %d", len(history))
+	}
+
+	var observation PlanObservationPayload
+	if err := json.Unmarshal([]byte(history[0].Content), &observation); err != nil {
+		t.Fatalf("failed to decode tool message: %v", err)
+	}
+
+	if got := len(observation.PlanObservation); got != 2 {
+		t.Fatalf("expected two observations, got %d", got)
+	}
+}
+
 func TestComputeValidationBackoff(t *testing.T) {
 	t.Parallel()
 
