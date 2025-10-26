@@ -71,6 +71,10 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		contextBudget: ContextBudget{MaxTokens: options.MaxContextTokens, CompactWhenPercent: options.CompactWhenPercent},
 	}
 
+	if err := registerBuiltinInternalCommands(rt.executor); err != nil {
+		return nil, err
+	}
+
 	for name, handler := range options.InternalCommands {
 		if err := rt.executor.RegisterInternalCommand(name, handler); err != nil {
 			return nil, err
