@@ -113,6 +113,19 @@ func (r *Runtime) Shutdown(reason string) {
 	r.enqueue(InputEvent{Type: InputTypeShutdown, Reason: reason})
 }
 
+func (r *Runtime) queueHandsFreePrompt() {
+	if !r.options.HandsFree {
+		return
+	}
+
+	topic := strings.TrimSpace(r.options.HandsFreeTopic)
+	if topic == "" {
+		return
+	}
+
+	r.enqueue(InputEvent{Type: InputTypePrompt, Prompt: topic})
+}
+
 func (r *Runtime) enqueue(evt InputEvent) {
 	select {
 	case <-r.closed:

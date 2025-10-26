@@ -30,6 +30,79 @@ func (s *stubTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+func TestLoopRequestsPromptWhenInteractive(t *testing.T) {
+	t.Parallel()
+
+	inputs := make(chan InputEvent)
+	close(inputs)
+
+	rt := &Runtime{
+		options:   RuntimeOptions{},
+		inputs:    inputs,
+		outputs:   make(chan RuntimeEvent, 2),
+		closed:    make(chan struct{}),
+		agentName: "main",
+	}
+
+	if err := rt.loop(context.Background()); err != nil {
+		t.Fatalf("loop returned error: %v", err)
+	}
+
+	var events []RuntimeEvent
+	for evt := range rt.outputs {
+		events = append(events, evt)
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("expected status and prompt request events, got %d", len(events))
+	}
+	if events[0].Type != EventTypeStatus {
+		t.Fatalf("expected first event to be status, got %s", events[0].Type)
+	}
+	if events[1].Type != EventTypeRequestInput {
+		t.Fatalf("expected second event to be request_input, got %s", events[1].Type)
+	}
+	if !strings.Contains(events[1].Message, "Enter a prompt to begin") {
+		t.Fatalf("unexpected prompt request message: %s", events[1].Message)
+	}
+}
+
+func TestLoopHandsFreeSkipsInitialPromptRequest(t *testing.T) {
+	t.Parallel()
+
+	inputs := make(chan InputEvent)
+	close(inputs)
+
+	rt := &Runtime{
+		options:   RuntimeOptions{HandsFree: true},
+		inputs:    inputs,
+		outputs:   make(chan RuntimeEvent, 2),
+		closed:    make(chan struct{}),
+		agentName: "main",
+	}
+
+	if err := rt.loop(context.Background()); err != nil {
+		t.Fatalf("loop returned error: %v", err)
+	}
+
+	var events []RuntimeEvent
+	for evt := range rt.outputs {
+		events = append(events, evt)
+	}
+
+	if len(events) != 1 {
+		t.Fatalf("expected only status event in hands-free mode, got %d", len(events))
+	}
+	if events[0].Type != EventTypeStatus {
+		t.Fatalf("expected status event, got %s", events[0].Type)
+	}
+	for _, evt := range events {
+		if evt.Type == EventTypeRequestInput {
+			t.Fatalf("unexpected request_input event: %+v", evt)
+		}
+	}
+}
+
 func TestPlanExecutionLoopPausesForHumanInput(t *testing.T) {
 	t.Parallel()
 
