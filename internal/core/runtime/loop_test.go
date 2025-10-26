@@ -87,7 +87,7 @@ func TestPlanExecutionLoopPausesForHumanInput(t *testing.T) {
 
 	transport := &stubTransport{body: body, statusCode: http.StatusOK}
 
-	client, err := NewOpenAIClient("test-key", "gpt-4o", "")
+	client, err := NewOpenAIClient("test-key", "gpt-4o", "", "")
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestPlanExecutionLoopHandsFreeCompletes(t *testing.T) {
 
 	transport := &stubTransport{body: body, statusCode: http.StatusOK}
 
-	client, err := NewOpenAIClient("test-key", "gpt-4o", "")
+	client, err := NewOpenAIClient("test-key", "gpt-4o", "", "")
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestPlanExecutionLoopHandsFreeStopsAtPassLimit(t *testing.T) {
 
 	transport := &stubTransport{body: body, statusCode: http.StatusOK}
 
-	client, err := NewOpenAIClient("test-key", "gpt-4o", "")
+	client, err := NewOpenAIClient("test-key", "gpt-4o", "", "")
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
