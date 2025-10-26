@@ -8,6 +8,39 @@ import (
 	"time"
 )
 
+func TestQueueHandsFreePromptEnqueuesConfiguredTopic(t *testing.T) {
+	t.Parallel()
+
+	rt := &Runtime{
+		options: RuntimeOptions{
+			HandsFree:      true,
+			HandsFreeTopic: "  Investigate logs   ",
+		},
+		inputs: make(chan InputEvent, 1),
+		closed: make(chan struct{}),
+	}
+
+	rt.queueHandsFreePrompt()
+
+	select {
+	case evt := <-rt.inputs:
+		if evt.Type != InputTypePrompt {
+			t.Fatalf("expected prompt input, got %s", evt.Type)
+		}
+		if evt.Prompt != "Investigate logs" {
+			t.Fatalf("expected trimmed topic, got %q", evt.Prompt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for hands-free prompt")
+	}
+
+	select {
+	case extra := <-rt.inputs:
+		t.Fatalf("unexpected additional input event: %+v", extra)
+	default:
+	}
+}
+
 func TestExecutePendingCommands_AppendsSingleToolMessage(t *testing.T) {
 	t.Parallel()
 

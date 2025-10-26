@@ -116,8 +116,11 @@ func (o *RuntimeOptions) setDefaults() {
 		defaultHistoryPath := "history.json"
 		o.HistoryLogPath = &defaultHistoryPath
 	}
-	if o.HandsFree && strings.TrimSpace(o.HandsFreeTopic) == "" {
-		o.HandsFreeTopic = "Hands-free session"
+	if o.HandsFree {
+		o.HandsFreeTopic = strings.TrimSpace(o.HandsFreeTopic)
+		if o.HandsFreeTopic == "" {
+			o.HandsFreeTopic = "Hands-free session"
+		}
 	}
 }
 

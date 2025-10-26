@@ -26,6 +26,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 		}()
 	}
 
+	if r.options.HandsFree {
+		r.queueHandsFreePrompt()
+	}
+
 	if !r.options.DisableInputReader && !r.options.HandsFree {
 		wg.Add(1)
 		go func() {
@@ -53,7 +57,9 @@ func (r *Runtime) loop(ctx context.Context) error {
 		Message: "Agent runtime started",
 		Level:   StatusLevelInfo,
 	})
-	r.emitRequestInput("Enter a prompt to begin.")
+	if !r.options.HandsFree {
+		r.emitRequestInput("Enter a prompt to begin.")
+	}
 
 	for {
 		select {
