@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -58,6 +59,7 @@ func TestApplyPatchPreservesPermissions(t *testing.T) {
 		t.Fatalf("failed to stat script: %v", err)
 	}
 
+	// A delete should fail when the target file does not exist.
 	run := strings.Join([]string{
 		"apply_patch",
 		"*** Begin Patch",
@@ -109,6 +111,7 @@ func TestApplyPatchRestoresSpecialBits(t *testing.T) {
 		t.Fatalf("failed to mark binary setuid: %v", err)
 	}
 
+	// A delete should fail when the target file does not exist.
 	run := strings.Join([]string{
 		"apply_patch",
 		"*** Begin Patch",
@@ -224,5 +227,233 @@ func TestApplyPatchWhitespaceOptions(t *testing.T) {
 	}
 	if !strings.Contains(payload.Stderr, "Hunk not found") {
 		t.Fatalf("stderr missing hunk message: %q", payload.Stderr)
+	}
+}
+
+func TestApplyPatchAppliesMixedOperations(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	modifyPath := filepath.Join(dir, "modify.txt")
+	deletePath := filepath.Join(dir, "delete.txt")
+	duplicatePath := filepath.Join(dir, "duplicate.txt")
+
+	if err := os.WriteFile(modifyPath, []byte("line1\nline2\n"), 0o644); err != nil {
+		t.Fatalf("failed to seed modify file: %v", err)
+	}
+	if err := os.WriteFile(deletePath, []byte("obsolete\n"), 0o644); err != nil {
+		t.Fatalf("failed to seed delete file: %v", err)
+	}
+	if err := os.WriteFile(duplicatePath, []byte("old\n"), 0o644); err != nil {
+		t.Fatalf("failed to seed duplicate file: %v", err)
+	}
+
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Add File: nested/new.txt",
+		"@@",
+		"+created",
+		"*** Delete File: delete.txt",
+		"*** Update File: modify.txt",
+		"@@",
+		"-line2",
+		"+changed",
+		"*** Add File: duplicate.txt",
+		"@@",
+		"+replacement",
+		"*** End Patch",
+	}, "\n")
+
+	run := "apply_patch\n" + patch
+	step := PlanStep{ID: "mixed", Command: CommandDraft{Shell: agentShell, Run: run, Cwd: dir}}
+	req := InternalCommandRequest{Name: applyPatchCommandName, Raw: run, Step: step}
+
+	payload, err := newApplyPatchCommand()(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if payload.ExitCode == nil || *payload.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %+v", payload.ExitCode)
+	}
+	if !strings.Contains(payload.Stdout, "A duplicate.txt") ||
+		!strings.Contains(payload.Stdout, "D delete.txt") ||
+		!strings.Contains(payload.Stdout, "A nested/new.txt") ||
+		!strings.Contains(payload.Stdout, "M modify.txt") {
+		t.Fatalf("stdout missing expected summary: %q", payload.Stdout)
+	}
+
+	createdData, err := os.ReadFile(filepath.Join(dir, "nested", "new.txt"))
+	if err != nil {
+		t.Fatalf("failed to read created file: %v", err)
+	}
+	if string(createdData) != "created" {
+		t.Fatalf("unexpected created file contents: %q", string(createdData))
+	}
+
+	modifiedData, err := os.ReadFile(modifyPath)
+	if err != nil {
+		t.Fatalf("failed to read modified file: %v", err)
+	}
+	if string(modifiedData) != "line1\nchanged\n" {
+		t.Fatalf("unexpected modified file contents: %q", string(modifiedData))
+	}
+
+	if _, err := os.Stat(deletePath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected delete.txt to be removed, stat err=%v", err)
+	}
+
+	dupData, err := os.ReadFile(duplicatePath)
+	if err != nil {
+		t.Fatalf("failed to read overwritten file: %v", err)
+	}
+	if string(dupData) != "replacement" {
+		t.Fatalf("unexpected duplicate file contents: %q", string(dupData))
+	}
+}
+
+func TestApplyPatchMovesFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "old", "name.txt")
+	destination := filepath.Join(dir, "renamed", "dir", "name.txt")
+
+	if err := os.MkdirAll(filepath.Dir(source), 0o755); err != nil {
+		t.Fatalf("failed to create source directory: %v", err)
+	}
+	if err := os.WriteFile(source, []byte("from\n"), 0o644); err != nil {
+		t.Fatalf("failed to seed source file: %v", err)
+	}
+
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: old/name.txt",
+		"*** Move to: renamed/dir/name.txt",
+		"@@",
+		"-from",
+		"+to",
+		"*** End Patch",
+	}, "\n")
+
+	run := "apply_patch\n" + patch
+	step := PlanStep{ID: "move", Command: CommandDraft{Shell: agentShell, Run: run, Cwd: dir}}
+	req := InternalCommandRequest{Name: applyPatchCommandName, Raw: run, Step: step}
+
+	payload, err := newApplyPatchCommand()(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if payload.ExitCode == nil || *payload.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %+v", payload.ExitCode)
+	}
+	if !strings.Contains(payload.Stdout, "M renamed/dir/name.txt") {
+		t.Fatalf("stdout missing move summary: %q", payload.Stdout)
+	}
+
+	if _, err := os.Stat(source); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected source to be removed, stat err=%v", err)
+	}
+	movedData, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatalf("failed to read moved file: %v", err)
+	}
+	if string(movedData) != "to\n" {
+		t.Fatalf("unexpected moved contents: %q", string(movedData))
+	}
+}
+
+func TestApplyPatchDeleteMissingFileFails(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	run := strings.Join([]string{
+		"apply_patch",
+		"*** Begin Patch",
+		"*** Delete File: missing.txt",
+		"*** End Patch",
+	}, "\n")
+
+	step := PlanStep{ID: "missing-delete", Command: CommandDraft{Shell: agentShell, Run: run, Cwd: dir}}
+	req := InternalCommandRequest{Name: applyPatchCommandName, Raw: run, Step: step}
+
+	payload, err := newApplyPatchCommand()(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected delete of missing file to fail")
+	}
+	if payload.ExitCode == nil || *payload.ExitCode == 0 {
+		t.Fatalf("expected non-zero exit code")
+	}
+	if !strings.Contains(payload.Stderr, "Failed to delete file missing.txt") {
+		t.Fatalf("stderr missing delete error: %q", payload.Stderr)
+	}
+}
+
+func TestApplyPatchDeleteDirectoryFails(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "target"), 0o755); err != nil {
+		t.Fatalf("failed to create directory: %v", err)
+	}
+
+	run := strings.Join([]string{
+		"apply_patch",
+		"*** Begin Patch",
+		"*** Delete File: target",
+		"*** End Patch",
+	}, "\n")
+
+	step := PlanStep{ID: "delete-dir", Command: CommandDraft{Shell: agentShell, Run: run, Cwd: dir}}
+	req := InternalCommandRequest{Name: applyPatchCommandName, Raw: run, Step: step}
+
+	payload, err := newApplyPatchCommand()(context.Background(), req)
+	if err == nil {
+		t.Fatalf("expected delete of directory to fail")
+	}
+	if payload.ExitCode == nil || *payload.ExitCode == 0 {
+		t.Fatalf("expected non-zero exit code")
+	}
+	if !strings.Contains(payload.Stderr, "Failed to delete file target") {
+		t.Fatalf("stderr missing directory delete error: %q", payload.Stderr)
+	}
+}
+
+func TestApplyPatchEndOfFileMarker(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "tail.txt")
+	if err := os.WriteFile(target, []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatalf("failed to seed tail file: %v", err)
+	}
+
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: tail.txt",
+		"@@",
+		"-beta",
+		"+omega",
+		"*** End of File",
+		"*** End Patch",
+	}, "\n")
+
+	run := "apply_patch\n" + patch
+	step := PlanStep{ID: "eof", Command: CommandDraft{Shell: agentShell, Run: run, Cwd: dir}}
+	req := InternalCommandRequest{Name: applyPatchCommandName, Raw: run, Step: step}
+
+	payload, err := newApplyPatchCommand()(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if payload.ExitCode == nil || *payload.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %+v", payload.ExitCode)
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("failed to read tail file: %v", err)
+	}
+	if string(data) != "alpha\nomega\n" {
+		t.Fatalf("unexpected tail contents: %q", string(data))
 	}
 }
