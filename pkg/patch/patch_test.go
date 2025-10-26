@@ -67,3 +67,13 @@ func TestApplyToMemoryAddsDocument(t *testing.T) {
 		t.Fatalf("unexpected results: %+v", results)
 	}
 }
+
+func TestApplyMemoryPatchReportsParseError(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	body := "*** Begin Patch\n*** Update File: sample.txt\n*** End Patch\n"
+	if _, _, err := ApplyMemoryPatch(ctx, body, map[string]string{}, Options{}); err == nil {
+		t.Fatalf("expected parse error")
+	}
+}
