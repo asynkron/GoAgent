@@ -41,6 +41,60 @@ func TestApplyPatchUpdatesFile(t *testing.T) {
 	}
 }
 
+func TestApplyPatchPreservesPermissions(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "script.sh")
+	original := "#!/bin/sh\necho hi\n"
+	if err := os.WriteFile(script, []byte(original), 0o755); err != nil {
+		t.Fatalf("failed to seed executable script: %v", err)
+	}
+
+	// Capture the mode to ensure we keep the executable bit after patching.
+	info, err := os.Stat(script)
+	if err != nil {
+		t.Fatalf("failed to stat script: %v", err)
+	}
+
+	run := strings.Join([]string{
+		"apply_patch",
+		"*** Begin Patch",
+		"*** Update File: script.sh",
+		"@@",
+		"-echo hi",
+		"+echo bye",
+		"*** End Patch",
+	}, "\n")
+
+	step := PlanStep{ID: "step-perm", Command: CommandDraft{Shell: agentShell, Run: run, Cwd: dir}}
+	req := InternalCommandRequest{Name: applyPatchCommandName, Raw: run, Step: step}
+
+	payload, err := newApplyPatchCommand()(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if payload.ExitCode == nil || *payload.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %+v", payload.ExitCode)
+	}
+
+	updated, err := os.Stat(script)
+	if err != nil {
+		t.Fatalf("failed to stat updated script: %v", err)
+	}
+	if got, want := updated.Mode().Perm(), info.Mode().Perm(); got != want {
+		t.Fatalf("script permissions changed: got %v want %v", got, want)
+	}
+
+	content, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatalf("failed to read updated script: %v", err)
+	}
+	if got, want := string(content), strings.Replace(original, "echo hi", "echo bye", 1); got != want {
+		t.Fatalf("script contents mismatch: got %q want %q", got, want)
+	}
+}
+
 func TestApplyPatchAddsFile(t *testing.T) {
 	t.Parallel()
 
