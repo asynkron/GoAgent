@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 func (r *Runtime) appendHistory(message ChatMessage) {
@@ -54,7 +55,15 @@ func (r *Runtime) writeHistoryLog(history []ChatMessage) {
 		return
 	}
 
-	if err := os.WriteFile("history.json", data, 0o644); err != nil {
+	var historyPath string
+	if r.options.HistoryLogPath != nil {
+		historyPath = strings.TrimSpace(*r.options.HistoryLogPath)
+	}
+	if historyPath == "" {
+		return
+	}
+
+	if err := os.WriteFile(historyPath, data, 0o644); err != nil {
 		r.emit(RuntimeEvent{
 			Type:    EventTypeStatus,
 			Message: fmt.Sprintf("Failed to write history log: %v", err),

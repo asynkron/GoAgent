@@ -20,6 +20,11 @@ type RuntimeOptions struct {
 	HandsFree           bool
 	HandsFreeTopic      string
 	MaxPasses           int
+	// HistoryLogPath controls where the runtime persists the serialized
+	// conversation history. A nil pointer defaults to "history.json" to
+	// preserve the previous behaviour while allowing callers to override
+	// or disable the log entirely.
+	HistoryLogPath *string
 
 	// MaxContextTokens defines the soft cap for the conversation history. When
 	// the estimated usage exceeds CompactWhenPercent of this value, older
@@ -104,6 +109,10 @@ func (o *RuntimeOptions) setDefaults() {
 	}
 	if len(o.ExitCommands) == 0 {
 		o.ExitCommands = []string{"exit", "quit", "/exit", "/quit"}
+	}
+	if o.HistoryLogPath == nil {
+		defaultHistoryPath := "history.json"
+		o.HistoryLogPath = &defaultHistoryPath
 	}
 	if o.HandsFree && strings.TrimSpace(o.HandsFreeTopic) == "" {
 		o.HandsFreeTopic = "Hands-free session"
