@@ -34,11 +34,13 @@ func main() {
 	}
 
 	defaultReasoning := os.Getenv("OPENAI_REASONING_EFFORT")
+	defaultBaseURL := os.Getenv("OPENAI_BASE_URL")
 
 	var (
 		model              = flag.String("model", defaultModel, "OpenAI model identifier to use for responses")
 		reasoningEffort    = flag.String("reasoning-effort", defaultReasoning, "Reasoning effort hint forwarded to OpenAI (low, medium, high)")
 		promptAugmentation = flag.String("augment", "", "additional system prompt instructions appended after the default prompt")
+		baseURL            = flag.String("openai-base-url", defaultBaseURL, "override the OpenAI API base URL (optional)")
 	)
 	flag.Parse()
 
@@ -63,6 +65,7 @@ func main() {
 
 	options := runtime.RuntimeOptions{
 		APIKey:                  apiKey,
+		APIBaseURL:              strings.TrimSpace(*baseURL),
 		Model:                   *model,
 		ReasoningEffort:         *reasoningEffort,
 		SystemPromptAugment:     combinedAugment,

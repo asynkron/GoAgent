@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/asynkron/goagent/internal/core/schema"
@@ -13,8 +14,13 @@ import (
 func TestRequestPlanIncludesResponseFormat(t *testing.T) {
 	t.Parallel()
 
-	var captured map[string]any
+	var (
+		captured    map[string]any
+		requestHost string
+	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Record the host so the test can assert that the custom base URL is respected.
+		requestHost = r.Host
 		defer r.Body.Close()
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("failed to decode request: %v", err)
@@ -45,17 +51,24 @@ func TestRequestPlanIncludesResponseFormat(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewOpenAIClient("test-key", "test-model", "")
+	client, err := NewOpenAIClient("test-key", "test-model", "", server.URL)
 	if err != nil {
 		t.Fatalf("unexpected client error: %v", err)
 	}
-	client.baseURL = server.URL
 	client.httpClient = server.Client()
 
 	history := []ChatMessage{{Role: RoleUser, Content: "hi"}}
 	_, err = client.RequestPlan(context.Background(), history)
 	if err != nil {
 		t.Fatalf("RequestPlan returned error: %v", err)
+	}
+
+	parsedURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("failed to parse server URL: %v", err)
+	}
+	if requestHost != parsedURL.Host {
+		t.Fatalf("expected request host %s to match server host %s", requestHost, parsedURL.Host)
 	}
 
 	format, ok := captured["response_format"].(map[string]any)

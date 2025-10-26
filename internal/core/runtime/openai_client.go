@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/asynkron/goagent/internal/core/schema"
@@ -23,13 +24,19 @@ type OpenAIClient struct {
 	baseURL         string
 }
 
+const defaultOpenAIBaseURL = "https://api.openai.com/v1/chat/completions"
+
 // NewOpenAIClient configures the client with the provided API key and model identifier.
-func NewOpenAIClient(apiKey, model, reasoningEffort string) (*OpenAIClient, error) {
+func NewOpenAIClient(apiKey, model, reasoningEffort, baseURL string) (*OpenAIClient, error) {
 	if apiKey == "" {
 		return nil, errors.New("openai: API key is required")
 	}
 	if model == "" {
 		return nil, errors.New("openai: model is required")
+	}
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		baseURL = defaultOpenAIBaseURL
 	}
 	tool, err := schema.Definition()
 	if err != nil {
@@ -43,7 +50,7 @@ func NewOpenAIClient(apiKey, model, reasoningEffort string) (*OpenAIClient, erro
 			Timeout: 120 * time.Second,
 		},
 		tool:    tool,
-		baseURL: "https://api.openai.com/v1/chat/completions",
+		baseURL: baseURL,
 	}, nil
 }
 

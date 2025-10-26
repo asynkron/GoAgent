@@ -46,7 +46,7 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		return nil, err
 	}
 
-	client, err := NewOpenAIClient(options.APIKey, options.Model, options.ReasoningEffort)
+	client, err := NewOpenAIClient(options.APIKey, options.Model, options.ReasoningEffort, options.APIBaseURL)
 	if err != nil {
 		return nil, err
 	}

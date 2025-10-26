@@ -13,6 +13,7 @@ import (
 // ergonomics like injecting alternative readers or writers during tests.
 type RuntimeOptions struct {
 	APIKey              string
+	APIBaseURL          string
 	Model               string
 	ReasoningEffort     string
 	SystemPromptAugment string
@@ -64,6 +65,7 @@ type RuntimeOptions struct {
 // setDefaults applies reasonable defaults that match the behaviour of the
 // TypeScript runtime while keeping Go specific knobs optional.
 func (o *RuntimeOptions) setDefaults() {
+	o.APIBaseURL = strings.TrimSpace(o.APIBaseURL)
 	if o.Model == "" {
 		o.Model = "gpt-4.1"
 	}
