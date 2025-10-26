@@ -24,9 +24,10 @@ const planResponseSchemaJSON = `{
       "description": "Markdown formatted message to the user."
     },
     "reasoning": {
-      "type": "string",
+      "type": "array",
+      "items": { "type": "string" },
       "description": "Supporting reasoning or commentary that can be used to explain the plan or message without being surfaced directly to the user.",
-      "default": ""
+      "default": []
     },
     "plan": {
       "type": "array",

@@ -108,7 +108,7 @@ func TestPlanExecutionLoopPausesForHumanInput(t *testing.T) {
 
 	plan := PlanResponse{
 		Message:           "Need clarification",
-		Reasoning:         "Reviewing the prompt requires clarification.",
+		Reasoning:         []string{"Reviewing the prompt requires clarification."},
 		RequireHumanInput: true,
 		Plan: []PlanStep{{
 			ID:           "step-1",
@@ -229,7 +229,7 @@ func TestPlanExecutionLoopHandsFreeCompletes(t *testing.T) {
 
 	plan := PlanResponse{
 		Message:           "All tasks are complete.",
-		Reasoning:         "No outstanding work remains.",
+		Reasoning:         []string{"No outstanding work remains."},
 		RequireHumanInput: false,
 		Plan:              []PlanStep{},
 	}
@@ -332,7 +332,7 @@ func TestPlanExecutionLoopHandsFreeStopsAtPassLimit(t *testing.T) {
 	zero := 0
 	plan := PlanResponse{
 		Message:           "Continuing work.",
-		Reasoning:         "Execute the next command.",
+		Reasoning:         []string{"Execute the next command."},
 		RequireHumanInput: false,
 		Plan: []PlanStep{{
 			ID:           "step-1",

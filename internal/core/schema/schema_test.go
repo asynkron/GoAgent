@@ -36,7 +36,15 @@ func TestPlanResponseSchemaRequiresReasoning(t *testing.T) {
 		t.Fatalf("expected reasoning property to be defined")
 	}
 
-	if typ, _ := value["type"].(string); typ != "string" {
-		t.Fatalf("expected reasoning to be a string, got %q", typ)
+	if typ, _ := value["type"].(string); typ != "array" {
+		t.Fatalf("expected reasoning to be an array, got %q", typ)
+	}
+
+	items, ok := value["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected reasoning array to describe its items")
+	}
+	if itemType, _ := items["type"].(string); itemType != "string" {
+		t.Fatalf("expected reasoning items to be strings, got %q", itemType)
 	}
 }
