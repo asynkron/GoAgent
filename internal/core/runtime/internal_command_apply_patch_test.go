@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,111 @@ func TestApplyPatchUpdatesFile(t *testing.T) {
 	}
 	if got, want := string(content), "gamma\nbeta\n"; got != want {
 		t.Fatalf("patched content mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestApplyPatchPreservesPermissions(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "script.sh")
+	original := "#!/bin/sh\necho hi\n"
+	if err := os.WriteFile(script, []byte(original), 0o755); err != nil {
+		t.Fatalf("failed to seed executable script: %v", err)
+	}
+
+	// Capture the mode to ensure we keep the executable bit after patching.
+	info, err := os.Stat(script)
+	if err != nil {
+		t.Fatalf("failed to stat script: %v", err)
+	}
+
+	run := strings.Join([]string{
+		"apply_patch",
+		"*** Begin Patch",
+		"*** Update File: script.sh",
+		"@@",
+		"-echo hi",
+		"+echo bye",
+		"*** End Patch",
+	}, "\n")
+
+	step := PlanStep{ID: "step-perm", Command: CommandDraft{Shell: agentShell, Run: run, Cwd: dir}}
+	req := InternalCommandRequest{Name: applyPatchCommandName, Raw: run, Step: step}
+
+	payload, err := newApplyPatchCommand()(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if payload.ExitCode == nil || *payload.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %+v", payload.ExitCode)
+	}
+
+	updated, err := os.Stat(script)
+	if err != nil {
+		t.Fatalf("failed to stat updated script: %v", err)
+	}
+	if got, want := updated.Mode().Perm(), info.Mode().Perm(); got != want {
+		t.Fatalf("script permissions changed: got %v want %v", got, want)
+	}
+
+	content, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatalf("failed to read updated script: %v", err)
+	}
+	if got, want := string(content), strings.Replace(original, "echo hi", "echo bye", 1); got != want {
+		t.Fatalf("script contents mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestApplyPatchRestoresSpecialBits(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "setuid-bin")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho special\n"), 0o755); err != nil {
+		t.Fatalf("failed to seed binary: %v", err)
+	}
+	// Apply a setuid bit that we expect to persist across patching.
+	if err := os.Chmod(binary, 0o755|fs.ModeSetuid); err != nil {
+		t.Fatalf("failed to mark binary setuid: %v", err)
+	}
+
+	run := strings.Join([]string{
+		"apply_patch",
+		"*** Begin Patch",
+		"*** Update File: setuid-bin",
+		"@@",
+		"-echo special",
+		"+echo restored",
+		"*** End Patch",
+	}, "\n")
+
+	step := PlanStep{ID: "step-special", Command: CommandDraft{Shell: agentShell, Run: run, Cwd: dir}}
+	req := InternalCommandRequest{Name: applyPatchCommandName, Raw: run, Step: step}
+
+	payload, err := newApplyPatchCommand()(context.Background(), req)
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if payload.ExitCode == nil || *payload.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %+v", payload.ExitCode)
+	}
+
+	info, err := os.Stat(binary)
+	if err != nil {
+		t.Fatalf("failed to stat patched binary: %v", err)
+	}
+	if info.Mode()&fs.ModeSetuid == 0 {
+		t.Fatalf("setuid bit was not restored: mode=%v", info.Mode())
+	}
+
+	data, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatalf("failed to read patched binary: %v", err)
+	}
+	if got, want := string(data), "#!/bin/sh\necho restored\n"; got != want {
+		t.Fatalf("patched binary mismatch: got %q want %q", got, want)
 	}
 }
 

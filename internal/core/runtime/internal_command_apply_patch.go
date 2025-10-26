@@ -71,6 +71,7 @@ type fileState struct {
 	normalizedLines         []string
 	originalContent         string
 	originalEndsWithNewline *bool
+	originalMode            fs.FileMode
 	touched                 bool
 	cursor                  int
 	hunkStatuses            []hunkStatus
@@ -419,6 +420,7 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 				normalizedLines:         nil,
 				originalContent:         string(content),
 				originalEndsWithNewline: &ends,
+				originalMode:            info.Mode(),
 				touched:                 false,
 				cursor:                  0,
 				hunkStatuses:            nil,
@@ -441,6 +443,7 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 				normalizedLines:         nil,
 				originalContent:         "",
 				originalEndsWithNewline: nil,
+				originalMode:            0,
 				touched:                 false,
 				cursor:                  0,
 				hunkStatuses:            nil,
@@ -504,8 +507,39 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 			return nil, &patchError{Message: fmt.Sprintf("failed to create directory for %s: %v", state.relativePath, err)}
 		}
 
-		if err := os.WriteFile(state.path, []byte(newContent), 0o644); err != nil {
+		perm := state.originalMode & fs.ModePerm
+		if perm == 0 {
+			perm = 0o644
+		}
+
+		if err := os.WriteFile(state.path, []byte(newContent), perm); err != nil {
 			return nil, &patchError{Message: fmt.Sprintf("failed to write %s: %v", state.relativePath, err)}
+		}
+
+		if state.originalMode != 0 {
+			desired := (state.originalMode & fs.ModePerm) | (state.originalMode & (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky))
+			if desired == 0 {
+				desired = perm
+			}
+
+			specialBits := state.originalMode & (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
+			needsChmod := specialBits != 0
+			if !needsChmod {
+				info, statErr := os.Stat(state.path)
+				if statErr != nil {
+					return nil, &patchError{Message: fmt.Sprintf("failed to stat %s after write: %v", state.relativePath, statErr)}
+				}
+				current := info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
+				if current != desired {
+					needsChmod = true
+				}
+			}
+
+			if needsChmod {
+				if err := os.Chmod(state.path, desired); err != nil {
+					return nil, &patchError{Message: fmt.Sprintf("failed to restore permissions for %s: %v", state.relativePath, err)}
+				}
+			}
 		}
 
 		status := "M"
