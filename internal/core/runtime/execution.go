@@ -116,47 +116,92 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 
 	var orderedResults []StepObservation
 
-	for {
-		if ctx.Err() != nil {
-			finalErr = ctx.Err()
-			break
+	type stepExecutionResult struct {
+		step        PlanStep
+		observation PlanObservationPayload
+		err         error
+	}
+
+	results := make(chan stepExecutionResult)
+	executing := 0
+	haltScheduling := false
+
+	// scheduleReadySteps launches goroutines for every currently-ready step.
+	scheduleReadySteps := func() bool {
+		started := false
+		if haltScheduling {
+			return started
 		}
 
-		step, ok := r.plan.Ready()
-		if !ok {
-			if !r.plan.HasPending() {
-				r.emit(RuntimeEvent{
-					Type:    EventTypeStatus,
-					Message: "Plan execution completed.",
-					Level:   StatusLevelInfo,
-				})
+		for ctx.Err() == nil {
+			stepPtr, ok := r.plan.Ready()
+			if !ok {
+				break
 			}
+
+			step := *stepPtr
+			started = true
+
+			title := strings.TrimSpace(step.Title)
+			if title == "" {
+				title = step.ID
+			}
+
+			r.emit(RuntimeEvent{
+				Type:    EventTypeStatus,
+				Message: fmt.Sprintf("Executing step %s: %s", step.ID, title),
+				Level:   StatusLevelInfo,
+				Metadata: map[string]any{
+					"step_id": step.ID,
+					"title":   step.Title,
+					"command": step.Command.Run,
+					"shell":   step.Command.Shell,
+					"cwd":     step.Command.Cwd,
+				},
+			})
+
+			executing++
+
+			go func(step PlanStep) {
+				// Each worker reports its outcome so the main loop can
+				// record results and schedule additional ready steps.
+				observation, err := r.executor.Execute(ctx, step)
+				results <- stepExecutionResult{step: step, observation: observation, err: err}
+			}(step)
+		}
+
+		return started
+	}
+
+	for {
+		if ctxErr := ctx.Err(); ctxErr != nil && finalErr == nil {
+			finalErr = ctxErr
+		}
+
+		started := scheduleReadySteps()
+		if executing == 0 {
+			if !started {
+				if !r.plan.HasPending() {
+					r.emit(RuntimeEvent{
+						Type:    EventTypeStatus,
+						Message: "Plan execution completed.",
+						Level:   StatusLevelInfo,
+					})
+				}
+				break
+			}
+		}
+
+		if executing == 0 {
 			break
 		}
 
-		title := strings.TrimSpace(step.Title)
-		if title == "" {
-			title = step.ID
-		}
+		result := <-results
+		executing--
 
-		r.emit(RuntimeEvent{
-			Type:    EventTypeStatus,
-			Message: fmt.Sprintf("Executing step %s: %s", step.ID, title),
-			Level:   StatusLevelInfo,
-			Metadata: map[string]any{
-				"step_id": step.ID,
-				"title":   step.Title,
-				"command": step.Command.Run,
-				"shell":   step.Command.Shell,
-				"cwd":     step.Command.Cwd,
-			},
-		})
-
-		observation, err := r.executor.Execute(ctx, *step)
-		if ctx.Err() != nil {
-			finalErr = ctx.Err()
-			break
-		}
+		step := result.step
+		observation := result.observation
+		err := result.err
 
 		executedSteps++
 		lastStepID = step.ID
@@ -171,10 +216,13 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 				observation.Details = err.Error()
 			}
 			message = fmt.Sprintf("Step %s failed: %v", step.ID, err)
-			finalErr = err
+			if finalErr == nil {
+				finalErr = err
+			}
+			haltScheduling = true
 		}
 
-		result := StepObservation{
+		stepResult := StepObservation{
 			ID:        step.ID,
 			Status:    status,
 			Stdout:    observation.Stdout,
@@ -185,7 +233,7 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 		}
 
 		planObservation := &PlanObservation{ObservationForLLM: &PlanObservationPayload{
-			PlanObservation: []StepObservation{result},
+			PlanObservation: []StepObservation{stepResult},
 		}}
 		if updateErr := r.plan.UpdateStatus(step.ID, status, planObservation); updateErr != nil {
 			r.emit(RuntimeEvent{
@@ -193,13 +241,15 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 				Message: fmt.Sprintf("Failed to update plan status for step %s: %v", step.ID, updateErr),
 				Level:   StatusLevelError,
 			})
-			finalErr = updateErr
-			break
+			if finalErr == nil {
+				finalErr = updateErr
+			}
+			haltScheduling = true
 		}
 
 		lastObservation = observation
 		haveObservation = true
-		orderedResults = append(orderedResults, result)
+		orderedResults = append(orderedResults, stepResult)
 
 		metadata := map[string]any{
 			"step_id":   step.ID,
@@ -222,10 +272,6 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 			Level:    level,
 			Metadata: metadata,
 		})
-
-		if err != nil {
-			break
-		}
 	}
 
 	payload := PlanObservationPayload{PlanObservation: orderedResults}
