@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"errors"
-	"sort"
-	"strings"
 	"sync"
 )
 
@@ -162,13 +160,4 @@ func (pm *PlanManager) Completed() bool {
 		}
 	}
 	return len(pm.steps) > 0
-}
-
-// SortOrder returns the deterministic step order for reporting.
-func (pm *PlanManager) SortOrder() []PlanStep {
-	snapshot := pm.Snapshot()
-	sort.SliceStable(snapshot, func(i, j int) bool {
-		return strings.Compare(snapshot[i].ID, snapshot[j].ID) < 0
-	})
-	return snapshot
 }
