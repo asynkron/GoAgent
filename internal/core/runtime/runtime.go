@@ -241,9 +241,9 @@ apply_patch [--respect-whitespace|--ignore-whitespace]
 +replacement line
 *** End Patch
 '''
-- The first line is the command line. You may append flags such as `--respect-whitespace` (defaults to ignoring whitespace).
-- After the command line, include a newline and wrap the patch body between `*** Begin Patch` and `*** End Patch`.
-- Start each file block with either `*** Update File: <path>` for existing files or `*** Add File: <path>` for new files. Paths are resolved relative to the step's `cwd`.
+- The first line is the command line. You may append flags such as '--respect-whitespace' (defaults to ignoring whitespace).
+- After the command line, include a newline and wrap the patch body between '*** Begin Patch' and '*** End Patch'.
+- Start each file block with either '*** Update File: <path>' for existing files or '*** Add File: <path>' for new files. Paths are resolved relative to the step's 'cwd'.
 - Within each file block, include one or more hunks beginning with an `@@` header followed by diff lines that start with space, `+`, or `-`.
 
 ## execution environment and sandbox
