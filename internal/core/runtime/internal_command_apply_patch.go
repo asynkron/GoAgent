@@ -14,6 +14,9 @@ import (
 
 const (
 	applyPatchCommandName = "apply_patch"
+	patchOpAdd            = "add"
+	patchOpUpdate         = "update"
+	patchOpDelete         = "delete"
 )
 
 type applyPatchOptions struct {
@@ -24,6 +27,7 @@ type applyPatchOptions struct {
 type patchOperation struct {
 	opType string
 	path   string
+	moveTo string
 	hunks  []patchHunk
 }
 
@@ -262,7 +266,7 @@ func parsePatch(input string) ([]patchOperation, error) {
 		if err := flushHunk(); err != nil {
 			return err
 		}
-		if len(currentOp.hunks) == 0 {
+		if currentOp.opType == patchOpUpdate && len(currentOp.hunks) == 0 {
 			return fmt.Errorf("no hunks provided for %s", currentOp.path)
 		}
 		operations = append(operations, *currentOp)
@@ -291,17 +295,41 @@ func parsePatch(input string) ([]patchOperation, error) {
 		}
 
 		if strings.HasPrefix(line, "*** ") {
+			if currentOp != nil {
+				if moveTarget, ok := strings.CutPrefix(line, "*** Move to: "); ok {
+					if currentOp.opType != patchOpUpdate {
+						return nil, fmt.Errorf("unsupported patch directive: %s", line)
+					}
+					if currentHunk != nil && len(currentHunk.lines) > 0 {
+						return nil, fmt.Errorf("move directive must appear before diff hunks for %s", currentOp.path)
+					}
+					if currentOp.moveTo != "" {
+						return nil, fmt.Errorf("duplicate move directive for %s", currentOp.path)
+					}
+					target := strings.TrimSpace(moveTarget)
+					if target == "" {
+						return nil, fmt.Errorf("move directive missing destination for %s", currentOp.path)
+					}
+					currentOp.moveTo = target
+					continue
+				}
+			}
 			if err := flushOp(); err != nil {
 				return nil, err
 			}
 			if updatePath, ok := strings.CutPrefix(line, "*** Update File: "); ok {
 				path := strings.TrimSpace(updatePath)
-				currentOp = &patchOperation{opType: "update", path: path}
+				currentOp = &patchOperation{opType: patchOpUpdate, path: path}
 				continue
 			}
 			if addPath, ok := strings.CutPrefix(line, "*** Add File: "); ok {
 				path := strings.TrimSpace(addPath)
-				currentOp = &patchOperation{opType: "add", path: path}
+				currentOp = &patchOperation{opType: patchOpAdd, path: path}
+				continue
+			}
+			if deletePath, ok := strings.CutPrefix(line, "*** Delete File: "); ok {
+				path := strings.TrimSpace(deletePath)
+				currentOp = &patchOperation{opType: patchOpDelete, path: path}
 				continue
 			}
 			return nil, fmt.Errorf("unsupported patch directive: %s", line)
@@ -372,184 +400,258 @@ func splitLines(input string) []string {
 }
 
 func applyPatchOperations(ctx context.Context, operations []patchOperation, opts applyPatchOptions) ([]fileResult, *patchError) {
-	states := make(map[string]*fileState)
+	var results []fileResult
 
-	ensureState := func(relativePath string, create bool) (*fileState, error) {
-		rel := strings.TrimSpace(relativePath)
-		if rel == "" {
-			return nil, fmt.Errorf("invalid patch path")
-		}
-
-		var abs string
-		if filepath.IsAbs(rel) {
-			abs = filepath.Clean(rel)
-		} else {
-			abs = filepath.Clean(filepath.Join(opts.workingDir, rel))
-		}
-
-		if state, ok := states[abs]; ok {
-			state.options = opts
-			if opts.ignoreWhitespace {
-				state.normalizedLines = ensureNormalizedLines(state)
-			} else {
-				state.normalizedLines = nil
-			}
-			return state, nil
-		}
-
-		info, err := os.Stat(abs)
-		switch {
-		case err == nil && create:
-			return nil, fmt.Errorf("cannot add %s because it already exists", rel)
-		case err == nil:
-			if info.IsDir() {
-				return nil, fmt.Errorf("cannot patch directory %s", rel)
-			}
-			content, readErr := os.ReadFile(abs)
-			if readErr != nil {
-				return nil, fmt.Errorf("failed to read %s: %v", rel, readErr)
-			}
-			normalized := strings.ReplaceAll(string(content), "\r\n", "\n")
-			normalized = strings.ReplaceAll(normalized, "\r", "\n")
-			lines := strings.Split(normalized, "\n")
-			ends := strings.HasSuffix(normalized, "\n")
-			state := &fileState{
-				path:                    abs,
-				relativePath:            rel,
-				lines:                   lines,
-				normalizedLines:         nil,
-				originalContent:         string(content),
-				originalEndsWithNewline: &ends,
-				originalMode:            info.Mode(),
-				touched:                 false,
-				cursor:                  0,
-				hunkStatuses:            nil,
-				isNew:                   false,
-				options:                 opts,
-			}
-			if opts.ignoreWhitespace {
-				state.normalizedLines = ensureNormalizedLines(state)
-			}
-			states[abs] = state
-			return state, nil
-		case errors.Is(err, fs.ErrNotExist):
-			if !create {
-				return nil, fmt.Errorf("failed to read %s: file does not exist", rel)
-			}
-			state := &fileState{
-				path:                    abs,
-				relativePath:            rel,
-				lines:                   []string{},
-				normalizedLines:         nil,
-				originalContent:         "",
-				originalEndsWithNewline: nil,
-				originalMode:            0,
-				touched:                 false,
-				cursor:                  0,
-				hunkStatuses:            nil,
-				isNew:                   true,
-				options:                 opts,
-			}
-			if opts.ignoreWhitespace {
-				state.normalizedLines = []string{}
-			}
-			states[abs] = state
-			return state, nil
-		default:
-			return nil, fmt.Errorf("failed to stat %s: %v", rel, err)
-		}
-	}
 	for _, op := range operations {
 		if ctx.Err() != nil {
 			return nil, &patchError{Message: ctx.Err().Error()}
 		}
 
-		if op.opType != "update" && op.opType != "add" {
+		switch op.opType {
+		case patchOpAdd:
+			state, err := prepareFileState(op.path, opts, true, true)
+			if err != nil {
+				return nil, &patchError{Message: err.Error()}
+			}
+			state.cursor = 0
+			state.hunkStatuses = nil
+			if len(op.hunks) == 0 {
+				state.touched = true
+			}
+			for index, hunk := range op.hunks {
+				if ctx.Err() != nil {
+					return nil, &patchError{Message: ctx.Err().Error()}
+				}
+				hunkNumber := index + 1
+				if err := applyHunk(state, hunk); err != nil {
+					return nil, enhanceHunkError(err, state, hunk, hunkNumber)
+				}
+				state.hunkStatuses = append(state.hunkStatuses, hunkStatus{Number: hunkNumber, Status: "applied"})
+				state.touched = true
+			}
+			if err := writePatchedFile(state, state.path, state.relativePath); err != nil {
+				return nil, err
+			}
+			results = append(results, fileResult{status: "A", path: state.relativePath})
+
+		case patchOpUpdate:
+			state, err := prepareFileState(op.path, opts, false, false)
+			if err != nil {
+				return nil, &patchError{Message: err.Error()}
+			}
+			state.cursor = 0
+			state.hunkStatuses = nil
+			for index, hunk := range op.hunks {
+				if ctx.Err() != nil {
+					return nil, &patchError{Message: ctx.Err().Error()}
+				}
+				hunkNumber := index + 1
+				if err := applyHunk(state, hunk); err != nil {
+					return nil, enhanceHunkError(err, state, hunk, hunkNumber)
+				}
+				state.hunkStatuses = append(state.hunkStatuses, hunkStatus{Number: hunkNumber, Status: "applied"})
+				state.touched = true
+			}
+
+			destAbs := state.path
+			destDisplay := state.relativePath
+			if strings.TrimSpace(op.moveTo) != "" {
+				moveAbs, moveDisplay, err := resolvePatchPath(op.moveTo, opts)
+				if err != nil {
+					return nil, &patchError{Message: err.Error()}
+				}
+				destAbs = moveAbs
+				destDisplay = moveDisplay
+			}
+
+			if err := writePatchedFile(state, destAbs, destDisplay); err != nil {
+				return nil, err
+			}
+
+			if destAbs != state.path {
+				if err := os.Remove(state.path); err != nil {
+					return nil, &patchError{Message: fmt.Sprintf("failed to remove original %s: %v", state.relativePath, err)}
+				}
+			}
+
+			results = append(results, fileResult{status: "M", path: destDisplay})
+
+		case patchOpDelete:
+			abs, rel, err := resolvePatchPath(op.path, opts)
+			if err != nil {
+				return nil, &patchError{Message: err.Error()}
+			}
+			info, statErr := os.Stat(abs)
+			if statErr != nil {
+				if errors.Is(statErr, fs.ErrNotExist) {
+					return nil, &patchError{Message: fmt.Sprintf("Failed to delete file %s", rel)}
+				}
+				return nil, &patchError{Message: fmt.Sprintf("failed to stat %s: %v", rel, statErr)}
+			}
+			if info.IsDir() {
+				return nil, &patchError{Message: fmt.Sprintf("Failed to delete file %s", rel)}
+			}
+			if err := os.Remove(abs); err != nil {
+				return nil, &patchError{Message: fmt.Sprintf("Failed to delete file %s", rel)}
+			}
+			results = append(results, fileResult{status: "D", path: rel})
+
+		default:
 			return nil, &patchError{Message: fmt.Sprintf("unsupported patch operation for %s: %s", op.path, op.opType)}
 		}
-
-		state, err := ensureState(op.path, op.opType == "add")
-		if err != nil {
-			return nil, &patchError{Message: err.Error()}
-		}
-
-		state.cursor = 0
-		state.hunkStatuses = nil
-		for index, hunk := range op.hunks {
-			hunkNumber := index + 1
-			if ctx.Err() != nil {
-				return nil, &patchError{Message: ctx.Err().Error()}
-			}
-			if err := applyHunk(state, hunk); err != nil {
-				return nil, enhanceHunkError(err, state, hunk, hunkNumber)
-			}
-			state.hunkStatuses = append(state.hunkStatuses, hunkStatus{Number: hunkNumber, Status: "applied"})
-			state.touched = true
-		}
-	}
-
-	var results []fileResult
-	for _, state := range states {
-		if !state.touched {
-			continue
-		}
-		newContent := strings.Join(state.lines, "\n")
-		if state.originalEndsWithNewline != nil {
-			if *state.originalEndsWithNewline && !strings.HasSuffix(newContent, "\n") {
-				newContent += "\n"
-			}
-			if !*state.originalEndsWithNewline && strings.HasSuffix(newContent, "\n") {
-				newContent = strings.TrimSuffix(newContent, "\n")
-			}
-		}
-
-		if err := os.MkdirAll(filepath.Dir(state.path), 0o755); err != nil {
-			return nil, &patchError{Message: fmt.Sprintf("failed to create directory for %s: %v", state.relativePath, err)}
-		}
-
-		perm := state.originalMode & fs.ModePerm
-		if perm == 0 {
-			perm = 0o644
-		}
-
-		if err := os.WriteFile(state.path, []byte(newContent), perm); err != nil {
-			return nil, &patchError{Message: fmt.Sprintf("failed to write %s: %v", state.relativePath, err)}
-		}
-
-		if state.originalMode != 0 {
-			desired := (state.originalMode & fs.ModePerm) | (state.originalMode & (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky))
-			if desired == 0 {
-				desired = perm
-			}
-
-			specialBits := state.originalMode & (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
-			needsChmod := specialBits != 0
-			if !needsChmod {
-				info, statErr := os.Stat(state.path)
-				if statErr != nil {
-					return nil, &patchError{Message: fmt.Sprintf("failed to stat %s after write: %v", state.relativePath, statErr)}
-				}
-				current := info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
-				if current != desired {
-					needsChmod = true
-				}
-			}
-
-			if needsChmod {
-				if err := os.Chmod(state.path, desired); err != nil {
-					return nil, &patchError{Message: fmt.Sprintf("failed to restore permissions for %s: %v", state.relativePath, err)}
-				}
-			}
-		}
-
-		status := "M"
-		if state.isNew {
-			status = "A"
-		}
-		results = append(results, fileResult{status: status, path: state.relativePath})
 	}
 
 	return results, nil
+}
+
+func resolvePatchPath(path string, opts applyPatchOptions) (string, string, error) {
+	rel := strings.TrimSpace(path)
+	if rel == "" {
+		return "", "", fmt.Errorf("invalid patch path")
+	}
+	if filepath.IsAbs(rel) {
+		return filepath.Clean(rel), rel, nil
+	}
+	abs := filepath.Clean(filepath.Join(opts.workingDir, rel))
+	return abs, rel, nil
+}
+
+func prepareFileState(relativePath string, opts applyPatchOptions, allowCreate, treatAsNew bool) (*fileState, error) {
+	abs, rel, err := resolvePatchPath(relativePath, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	info, statErr := os.Stat(abs)
+	switch {
+	case statErr == nil:
+		if info.IsDir() {
+			return nil, fmt.Errorf("cannot patch directory %s", rel)
+		}
+
+		state := &fileState{
+			path:                    abs,
+			relativePath:            rel,
+			lines:                   []string{},
+			normalizedLines:         nil,
+			originalContent:         "",
+			originalEndsWithNewline: nil,
+			originalMode:            info.Mode(),
+			touched:                 false,
+			cursor:                  0,
+			hunkStatuses:            nil,
+			isNew:                   treatAsNew,
+			options:                 opts,
+		}
+
+		if treatAsNew {
+			if opts.ignoreWhitespace {
+				state.normalizedLines = []string{}
+			}
+			return state, nil
+		}
+
+		content, readErr := os.ReadFile(abs)
+		if readErr != nil {
+			return nil, fmt.Errorf("Failed to read file to update %s: %v", rel, readErr)
+		}
+		normalized := strings.ReplaceAll(string(content), "\r\n", "\n")
+		normalized = strings.ReplaceAll(normalized, "\r", "\n")
+		lines := strings.Split(normalized, "\n")
+		ends := strings.HasSuffix(normalized, "\n")
+		state.lines = lines
+		state.originalContent = string(content)
+		state.originalEndsWithNewline = &ends
+		if opts.ignoreWhitespace {
+			state.normalizedLines = ensureNormalizedLines(state)
+		}
+		return state, nil
+
+	case errors.Is(statErr, fs.ErrNotExist):
+		if !allowCreate {
+			return nil, fmt.Errorf("Failed to read file to update %s: file does not exist", rel)
+		}
+		state := &fileState{
+			path:                    abs,
+			relativePath:            rel,
+			lines:                   []string{},
+			normalizedLines:         nil,
+			originalContent:         "",
+			originalEndsWithNewline: nil,
+			originalMode:            0,
+			touched:                 false,
+			cursor:                  0,
+			hunkStatuses:            nil,
+			isNew:                   true,
+			options:                 opts,
+		}
+		if opts.ignoreWhitespace {
+			state.normalizedLines = []string{}
+		}
+		return state, nil
+
+	default:
+		return nil, fmt.Errorf("failed to stat %s: %v", rel, statErr)
+	}
+}
+
+func writePatchedFile(state *fileState, destinationPath, displayPath string) *patchError {
+	if state == nil {
+		return &patchError{Message: "missing file state"}
+	}
+
+	newContent := strings.Join(state.lines, "\n")
+	if state.originalEndsWithNewline != nil {
+		if *state.originalEndsWithNewline && !strings.HasSuffix(newContent, "\n") {
+			newContent += "\n"
+		}
+		if !*state.originalEndsWithNewline && strings.HasSuffix(newContent, "\n") {
+			newContent = strings.TrimSuffix(newContent, "\n")
+		}
+	} else if len(state.lines) > 0 && !strings.HasSuffix(newContent, "\n") {
+		newContent += "\n"
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+		return &patchError{Message: fmt.Sprintf("failed to create directory for %s: %v", displayPath, err)}
+	}
+
+	perm := state.originalMode & fs.ModePerm
+	if perm == 0 {
+		perm = 0o644
+	}
+
+	if err := os.WriteFile(destinationPath, []byte(newContent), perm); err != nil {
+		return &patchError{Message: fmt.Sprintf("failed to write %s: %v", displayPath, err)}
+	}
+
+	if state.originalMode != 0 {
+		desired := (state.originalMode & fs.ModePerm) | (state.originalMode & (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky))
+		if desired == 0 {
+			desired = perm
+		}
+
+		specialBits := state.originalMode & (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
+		needsChmod := specialBits != 0
+		if !needsChmod {
+			info, statErr := os.Stat(destinationPath)
+			if statErr != nil {
+				return &patchError{Message: fmt.Sprintf("failed to stat %s after write: %v", displayPath, statErr)}
+			}
+			current := info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
+			if current != desired {
+				needsChmod = true
+			}
+		}
+
+		if needsChmod {
+			if err := os.Chmod(destinationPath, desired); err != nil {
+				return &patchError{Message: fmt.Sprintf("failed to restore permissions for %s: %v", displayPath, err)}
+			}
+		}
+	}
+
+	return nil
 }
 
 func normalizeLine(line string) string {
