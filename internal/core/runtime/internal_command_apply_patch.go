@@ -22,9 +22,10 @@ type applyPatchOptions struct {
 }
 
 type patchOperation struct {
-	opType string
-	path   string
-	hunks  []patchHunk
+	opType   string
+	path     string
+	movePath string
+	hunks    []patchHunk
 }
 
 type patchHunk struct {
@@ -33,6 +34,7 @@ type patchHunk struct {
 	header        string
 	lines         []string
 	rawPatchLines []string
+	atEOF         bool
 }
 
 type hunkStatus struct {
@@ -76,6 +78,7 @@ type fileState struct {
 	cursor                  int
 	hunkStatuses            []hunkStatus
 	isNew                   bool
+	movePath                string
 	options                 applyPatchOptions
 }
 
@@ -262,7 +265,7 @@ func parsePatch(input string) ([]patchOperation, error) {
 		if err := flushHunk(); err != nil {
 			return err
 		}
-		if len(currentOp.hunks) == 0 {
+		if len(currentOp.hunks) == 0 && !(currentOp.opType == "update" && strings.TrimSpace(currentOp.movePath) != "") {
 			return fmt.Errorf("no hunks provided for %s", currentOp.path)
 		}
 		operations = append(operations, *currentOp)
@@ -290,16 +293,51 @@ func parsePatch(input string) ([]patchOperation, error) {
 			continue
 		}
 
-		if strings.HasPrefix(line, "*** ") {
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "*** End of File" {
+			if currentOp == nil {
+				return nil, fmt.Errorf("end-of-file marker encountered before a file directive")
+			}
+			if currentHunk == nil {
+				currentHunk = &patchHunk{}
+			}
+			currentHunk.lines = append(currentHunk.lines, line)
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "*** Move to: ") {
+			if currentOp == nil {
+				return nil, fmt.Errorf("move directive encountered before a file directive")
+			}
+			if currentOp.opType != "update" {
+				return nil, fmt.Errorf("move directive only allowed for update operations")
+			}
+			currentOp.movePath = strings.TrimSpace(strings.TrimPrefix(trimmed, "*** Move to: "))
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "*** Delete File: ") {
 			if err := flushOp(); err != nil {
 				return nil, err
 			}
-			if updatePath, ok := strings.CutPrefix(line, "*** Update File: "); ok {
+			path := strings.TrimSpace(strings.TrimPrefix(trimmed, "*** Delete File: "))
+			operations = append(operations, patchOperation{opType: "delete", path: path})
+			currentOp = nil
+			currentHunk = nil
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "*** ") {
+			if err := flushOp(); err != nil {
+				return nil, err
+			}
+			if updatePath, ok := strings.CutPrefix(trimmed, "*** Update File: "); ok {
 				path := strings.TrimSpace(updatePath)
 				currentOp = &patchOperation{opType: "update", path: path}
 				continue
 			}
-			if addPath, ok := strings.CutPrefix(line, "*** Add File: "); ok {
+			if addPath, ok := strings.CutPrefix(trimmed, "*** Add File: "); ok {
 				path := strings.TrimSpace(addPath)
 				currentOp = &patchOperation{opType: "add", path: path}
 				continue
@@ -308,7 +346,7 @@ func parsePatch(input string) ([]patchOperation, error) {
 		}
 
 		if currentOp == nil {
-			if strings.TrimSpace(line) == "" {
+			if trimmed == "" {
 				continue
 			}
 			return nil, fmt.Errorf("diff content appeared before a file directive: %q", line)
@@ -352,6 +390,8 @@ func parseHunk(lines []string, filePath, header string) (patchHunk, error) {
 			value := raw[1:]
 			hunk.before = append(hunk.before, value)
 			hunk.after = append(hunk.after, value)
+		case strings.TrimSpace(raw) == "*** End of File":
+			hunk.atEOF = true
 		case raw == "\\ No newline at end of file":
 			// ignore marker
 		default:
@@ -373,20 +413,28 @@ func splitLines(input string) []string {
 
 func applyPatchOperations(ctx context.Context, operations []patchOperation, opts applyPatchOptions) ([]fileResult, *patchError) {
 	states := make(map[string]*fileState)
+	results := []fileResult{}
 
-	ensureState := func(relativePath string, create bool) (*fileState, error) {
+	resolvePath := func(relativePath string) (string, string, error) {
 		rel := strings.TrimSpace(relativePath)
 		if rel == "" {
-			return nil, fmt.Errorf("invalid patch path")
+			return "", "", fmt.Errorf("invalid patch path")
 		}
-
+		cleaned := filepath.Clean(rel)
 		var abs string
-		if filepath.IsAbs(rel) {
-			abs = filepath.Clean(rel)
+		if filepath.IsAbs(cleaned) {
+			abs = filepath.Clean(cleaned)
 		} else {
-			abs = filepath.Clean(filepath.Join(opts.workingDir, rel))
+			abs = filepath.Clean(filepath.Join(opts.workingDir, cleaned))
 		}
+		return abs, cleaned, nil
+	}
 
+	ensureState := func(relativePath string, create bool) (*fileState, error) {
+		abs, rel, err := resolvePath(relativePath)
+		if err != nil {
+			return nil, err
+		}
 		if state, ok := states[abs]; ok {
 			state.options = opts
 			if opts.ignoreWhitespace {
@@ -400,7 +448,29 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 		info, err := os.Stat(abs)
 		switch {
 		case err == nil && create:
-			return nil, fmt.Errorf("cannot add %s because it already exists", rel)
+			if info.IsDir() {
+				return nil, fmt.Errorf("cannot add directory %s", rel)
+			}
+			state := &fileState{
+				path:                    abs,
+				relativePath:            rel,
+				lines:                   []string{},
+				normalizedLines:         nil,
+				originalContent:         "",
+				originalEndsWithNewline: nil,
+				originalMode:            info.Mode(),
+				touched:                 false,
+				cursor:                  0,
+				hunkStatuses:            nil,
+				isNew:                   true,
+				movePath:                "",
+				options:                 opts,
+			}
+			if opts.ignoreWhitespace {
+				state.normalizedLines = []string{}
+			}
+			states[abs] = state
+			return state, nil
 		case err == nil:
 			if info.IsDir() {
 				return nil, fmt.Errorf("cannot patch directory %s", rel)
@@ -425,6 +495,7 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 				cursor:                  0,
 				hunkStatuses:            nil,
 				isNew:                   false,
+				movePath:                "",
 				options:                 opts,
 			}
 			if opts.ignoreWhitespace {
@@ -448,6 +519,7 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 				cursor:                  0,
 				hunkStatuses:            nil,
 				isNew:                   true,
+				movePath:                "",
 				options:                 opts,
 			}
 			if opts.ignoreWhitespace {
@@ -459,36 +531,55 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 			return nil, fmt.Errorf("failed to stat %s: %v", rel, err)
 		}
 	}
+
 	for _, op := range operations {
 		if ctx.Err() != nil {
 			return nil, &patchError{Message: ctx.Err().Error()}
 		}
 
-		if op.opType != "update" && op.opType != "add" {
+		switch op.opType {
+		case "delete":
+			abs, rel, err := resolvePath(op.path)
+			if err != nil {
+				return nil, &patchError{Message: err.Error()}
+			}
+			info, statErr := os.Stat(abs)
+			if statErr != nil || info.IsDir() {
+				return nil, &patchError{Message: fmt.Sprintf("Failed to delete file %s", rel)}
+			}
+			if err := os.Remove(abs); err != nil {
+				return nil, &patchError{Message: fmt.Sprintf("Failed to delete file %s", rel)}
+			}
+			results = append(results, fileResult{status: "D", path: rel})
+			continue
+		case "update", "add":
+			state, err := ensureState(op.path, op.opType == "add")
+			if err != nil {
+				return nil, &patchError{Message: err.Error()}
+			}
+			state.cursor = 0
+			state.hunkStatuses = nil
+			for index, hunk := range op.hunks {
+				hunkNumber := index + 1
+				if ctx.Err() != nil {
+					return nil, &patchError{Message: ctx.Err().Error()}
+				}
+				if err := applyHunk(state, hunk); err != nil {
+					return nil, enhanceHunkError(err, state, hunk, hunkNumber)
+				}
+				state.hunkStatuses = append(state.hunkStatuses, hunkStatus{Number: hunkNumber, Status: "applied"})
+				state.touched = true
+			}
+			trimmedMove := strings.TrimSpace(op.movePath)
+			if trimmedMove != "" {
+				state.movePath = trimmedMove
+				state.touched = true
+			}
+		default:
 			return nil, &patchError{Message: fmt.Sprintf("unsupported patch operation for %s: %s", op.path, op.opType)}
-		}
-
-		state, err := ensureState(op.path, op.opType == "add")
-		if err != nil {
-			return nil, &patchError{Message: err.Error()}
-		}
-
-		state.cursor = 0
-		state.hunkStatuses = nil
-		for index, hunk := range op.hunks {
-			hunkNumber := index + 1
-			if ctx.Err() != nil {
-				return nil, &patchError{Message: ctx.Err().Error()}
-			}
-			if err := applyHunk(state, hunk); err != nil {
-				return nil, enhanceHunkError(err, state, hunk, hunkNumber)
-			}
-			state.hunkStatuses = append(state.hunkStatuses, hunkStatus{Number: hunkNumber, Status: "applied"})
-			state.touched = true
 		}
 	}
 
-	var results []fileResult
 	for _, state := range states {
 		if !state.touched {
 			continue
@@ -503,8 +594,20 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 			}
 		}
 
-		if err := os.MkdirAll(filepath.Dir(state.path), 0o755); err != nil {
-			return nil, &patchError{Message: fmt.Sprintf("failed to create directory for %s: %v", state.relativePath, err)}
+		writePath := state.path
+		displayPath := state.relativePath
+		moveTarget := strings.TrimSpace(state.movePath)
+		if moveTarget != "" {
+			abs, rel, err := resolvePath(moveTarget)
+			if err != nil {
+				return nil, &patchError{Message: err.Error()}
+			}
+			writePath = abs
+			displayPath = rel
+		}
+
+		if err := os.MkdirAll(filepath.Dir(writePath), 0o755); err != nil {
+			return nil, &patchError{Message: fmt.Sprintf("failed to create directory for %s: %v", displayPath, err)}
 		}
 
 		perm := state.originalMode & fs.ModePerm
@@ -512,8 +615,8 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 			perm = 0o644
 		}
 
-		if err := os.WriteFile(state.path, []byte(newContent), perm); err != nil {
-			return nil, &patchError{Message: fmt.Sprintf("failed to write %s: %v", state.relativePath, err)}
+		if err := os.WriteFile(writePath, []byte(newContent), perm); err != nil {
+			return nil, &patchError{Message: fmt.Sprintf("failed to write %s: %v", displayPath, err)}
 		}
 
 		if state.originalMode != 0 {
@@ -525,9 +628,9 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 			specialBits := state.originalMode & (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
 			needsChmod := specialBits != 0
 			if !needsChmod {
-				info, statErr := os.Stat(state.path)
+				info, statErr := os.Stat(writePath)
 				if statErr != nil {
-					return nil, &patchError{Message: fmt.Sprintf("failed to stat %s after write: %v", state.relativePath, statErr)}
+					return nil, &patchError{Message: fmt.Sprintf("failed to stat %s after write: %v", displayPath, statErr)}
 				}
 				current := info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
 				if current != desired {
@@ -536,9 +639,16 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 			}
 
 			if needsChmod {
-				if err := os.Chmod(state.path, desired); err != nil {
-					return nil, &patchError{Message: fmt.Sprintf("failed to restore permissions for %s: %v", state.relativePath, err)}
+				if err := os.Chmod(writePath, desired); err != nil {
+					return nil, &patchError{Message: fmt.Sprintf("failed to restore permissions for %s: %v", displayPath, err)}
 				}
+			}
+		}
+
+		if moveTarget != "" && writePath != state.path {
+			// Removing the original file mirrors the behaviour of the Rust implementation when renaming files.
+			if err := os.Remove(state.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return nil, &patchError{Message: fmt.Sprintf("failed to remove %s after move: %v", state.relativePath, err)}
 			}
 		}
 
@@ -546,12 +656,11 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 		if state.isNew {
 			status = "A"
 		}
-		results = append(results, fileResult{status: status, path: state.relativePath})
+		results = append(results, fileResult{status: status, path: displayPath})
 	}
 
 	return results, nil
 }
-
 func normalizeLine(line string) string {
 	if line == "" {
 		return ""
@@ -616,9 +725,9 @@ func applyHunk(state *fileState, hunk patchHunk) error {
 		return nil
 	}
 
-	matchIndex := findSubsequence(state.lines, before, state.cursor)
+	matchIndex := findSubsequence(state.lines, before, state.cursor, hunk.atEOF)
 	if matchIndex == -1 {
-		matchIndex = findSubsequence(state.lines, before, 0)
+		matchIndex = findSubsequence(state.lines, before, 0, hunk.atEOF)
 	}
 
 	if matchIndex == -1 && state.options.ignoreWhitespace {
@@ -627,9 +736,9 @@ func applyHunk(state *fileState, hunk patchHunk) error {
 			normalizedBefore[i] = normalizeLine(line)
 		}
 		normalizedLines := ensureNormalizedLines(state)
-		matchIndex = findSubsequence(normalizedLines, normalizedBefore, state.cursor)
+		matchIndex = findSubsequence(normalizedLines, normalizedBefore, state.cursor, hunk.atEOF)
 		if matchIndex == -1 {
-			matchIndex = findSubsequence(normalizedLines, normalizedBefore, 0)
+			matchIndex = findSubsequence(normalizedLines, normalizedBefore, 0, hunk.atEOF)
 		}
 	}
 
@@ -664,7 +773,7 @@ func splice(target []string, index, deleteCount int, replacement []string) []str
 	return result
 }
 
-func findSubsequence(haystack, needle []string, startIndex int) int {
+func findSubsequence(haystack, needle []string, startIndex int, requireEOF bool) int {
 	if len(needle) == 0 {
 		return -1
 	}
@@ -683,10 +792,25 @@ func findSubsequence(haystack, needle []string, startIndex int) int {
 			}
 		}
 		if matched {
+			if requireEOF && !matchSatisfiesEOF(haystack, i, len(needle)) {
+				continue
+			}
 			return i
 		}
 	}
 	return -1
+}
+func matchSatisfiesEOF(lines []string, start, length int) bool {
+	end := start + length
+	if end >= len(lines) {
+		return true
+	}
+	for _, line := range lines[end:] {
+		if line != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func enhanceHunkError(err error, state *fileState, hunk patchHunk, number int) *patchError {
