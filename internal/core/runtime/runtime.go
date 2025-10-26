@@ -231,7 +231,9 @@ the "run" part of the command allows you to run shell commands.
 
 ## internal commands
 ### apply_patch
-Use this command to apply unified-diff style patches. The payload sent in the plan step's "run" field must follow this shape:
+Use this command to apply unified-diff style patches via the internal executor.
+- Set the plan step's command shell to "openagent" so the runtime routes the request to the internal handler instead of the OS shell.
+- The payload sent in the plan step's "run" field must follow this shape:
 '''
 apply_patch [--respect-whitespace|--ignore-whitespace]
 *** Begin Patch
@@ -245,6 +247,11 @@ apply_patch [--respect-whitespace|--ignore-whitespace]
 - After the command line, include a newline and wrap the patch body between '*** Begin Patch' and '*** End Patch'.
 - Start each file block with either '*** Update File: <path>' for existing files or '*** Add File: <path>' for new files. Paths are resolved relative to the step's 'cwd'.
 - Within each file block, include one or more hunks beginning with an '@@' header followed by diff lines that start with space, '+', or '-'.
+- Example plan step payload (escaped for this Go string literal):
+'''
+{"id":"step-42","command":{"shell":"openagent","cwd":"/workspace/project","run":"apply_patch\n*** Begin Patch\n*** Update File: relative/path/to/file.ext\n@@\n-old line\n+new line\n*** End Patch"}}
+'''
+  The executor parses this JSON, notices the "openagent" shell, and forwards the run string to the apply_patch handler which consumes the embedded diff.
 
 ## execution environment and sandbox
 You are not in a sandbox, you have full access to run any command.
