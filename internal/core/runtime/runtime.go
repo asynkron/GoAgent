@@ -229,6 +229,23 @@ pipe the output to a temp file and then read the file.
 You can run commands via the plan, create a plan with a plan step, the plan step should have a command.
 the "run" part of the command allows you to run shell commands.
 
+## internal commands
+### apply_patch
+Use this command to apply unified-diff style patches. The payload sent in the plan step's "run" field must follow this shape:
+```
+apply_patch [--respect-whitespace|--ignore-whitespace]
+*** Begin Patch
+*** Update File: relative/path/to/file.ext
+@@
+-previous line
++replacement line
+*** End Patch
+```
+- The first line is the command line. You may append flags such as `--respect-whitespace` (defaults to ignoring whitespace).
+- After the command line, include a newline and wrap the patch body between `*** Begin Patch` and `*** End Patch`.
+- Start each file block with either `*** Update File: <path>` for existing files or `*** Add File: <path>` for new files. Paths are resolved relative to the step's `cwd`.
+- Within each file block, include one or more hunks beginning with an `@@` header followed by diff lines that start with space, `+`, or `-`.
+
 ## execution environment and sandbox
 You are not in a sandbox, you have full access to run any command.
 
