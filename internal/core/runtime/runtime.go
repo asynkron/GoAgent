@@ -58,6 +58,11 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		Pass:      0,
 	}}
 
+	executor := NewCommandExecutor()
+	if err := registerBuiltinInternalCommands(executor); err != nil {
+		return nil, err
+	}
+
 	rt := &Runtime{
 		options:       options,
 		inputs:        make(chan InputEvent, options.InputBuffer),
@@ -65,7 +70,7 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		closed:        make(chan struct{}),
 		plan:          NewPlanManager(),
 		client:        client,
-		executor:      NewCommandExecutor(),
+		executor:      executor,
 		history:       initialHistory,
 		agentName:     "main",
 		contextBudget: ContextBudget{MaxTokens: options.MaxContextTokens, CompactWhenPercent: options.CompactWhenPercent},
