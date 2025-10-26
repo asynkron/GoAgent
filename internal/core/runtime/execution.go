@@ -79,8 +79,18 @@ func (r *Runtime) recordPlanResponse(plan *PlanResponse, toolCall ToolCall) int 
 		"tool_name":           toolCall.Name,
 		"require_human_input": plan.RequireHumanInput,
 	}
-	if strings.TrimSpace(plan.Reasoning) != "" {
-		planMetadata["reasoning"] = plan.Reasoning
+	if len(plan.Reasoning) > 0 {
+		reasoning := make([]string, 0, len(plan.Reasoning))
+		for _, entry := range plan.Reasoning {
+			trimmed := strings.TrimSpace(entry)
+			if trimmed == "" {
+				continue
+			}
+			reasoning = append(reasoning, trimmed)
+		}
+		if len(reasoning) > 0 {
+			planMetadata["reasoning"] = reasoning
+		}
 	}
 
 	r.emit(RuntimeEvent{
