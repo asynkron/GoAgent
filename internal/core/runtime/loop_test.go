@@ -341,7 +341,7 @@ func TestPlanExecutionLoopHandsFreeStopsAtPassLimit(t *testing.T) {
 			WaitingForID: []string{},
 			Command: CommandDraft{
 				Reason:      "Hands-free execution",
-				Shell:       "agent",
+				Shell:       agentShell,
 				Run:         "noop",
 				TimeoutSec:  60,
 				FilterRegex: "",

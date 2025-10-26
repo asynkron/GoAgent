@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -124,7 +126,7 @@ func TestCommandExecutorExecuteInternal(t *testing.T) {
 		t.Fatalf("failed to register internal command: %v", err)
 	}
 
-	step := PlanStep{ID: "step-1", Command: CommandDraft{Shell: "agent", Run: `beep 123 message="hello world"`}}
+	step := PlanStep{ID: "step-1", Command: CommandDraft{Shell: agentShell, Run: `beep 123 message="hello world"`}}
 	payload, err := executor.Execute(context.Background(), step)
 	if err != nil {
 		t.Fatalf("expected success, got error: %v", err)
@@ -137,11 +139,53 @@ func TestCommandExecutorExecuteInternal(t *testing.T) {
 	}
 }
 
+func TestCommandExecutorExecuteBuiltinApplyPatch(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(target, []byte("alpha\n"), 0o644); err != nil {
+		t.Fatalf("failed to seed file: %v", err)
+	}
+
+	executor := NewCommandExecutor()
+	if err := registerBuiltinInternalCommands(executor); err != nil {
+		t.Fatalf("failed to register builtins: %v", err)
+	}
+
+	run := strings.Join([]string{
+		"apply_patch",
+		"*** Begin Patch",
+		"*** Update File: note.txt",
+		"@@",
+		"-alpha",
+		"+beta",
+		"*** End Patch",
+	}, "\n")
+
+	step := PlanStep{ID: "patch", Command: CommandDraft{Shell: agentShell, Run: run, Cwd: dir}}
+	payload, err := executor.Execute(context.Background(), step)
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+	if payload.ExitCode == nil || *payload.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %v", payload.ExitCode)
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("failed to read patched file: %v", err)
+	}
+	if got, want := string(data), "beta\n"; got != want {
+		t.Fatalf("patched content mismatch: got %q want %q", got, want)
+	}
+}
+
 func TestCommandExecutorExecuteInternalUnknown(t *testing.T) {
 	t.Parallel()
 
 	executor := NewCommandExecutor()
-	step := PlanStep{ID: "step-1", Command: CommandDraft{Shell: "agent", Run: "noop"}}
+	step := PlanStep{ID: "step-1", Command: CommandDraft{Shell: agentShell, Run: "noop"}}
 	_, err := executor.Execute(context.Background(), step)
 	if err == nil || !strings.Contains(err.Error(), "unknown internal command") {
 		t.Fatalf("expected unknown command error, got %v", err)

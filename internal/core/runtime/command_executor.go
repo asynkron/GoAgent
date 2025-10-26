@@ -17,7 +17,7 @@ import (
 
 const maxObservationBytes = 50 * 1024
 
-const agentShell = "agent"
+const agentShell = "openagent"
 
 // InternalCommandHandler executes agent scoped commands that are not forwarded to the
 // host shell. Implementations can inspect the parsed arguments and return a
