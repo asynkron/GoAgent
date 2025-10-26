@@ -521,8 +521,24 @@ func applyPatchOperations(ctx context.Context, operations []patchOperation, opts
 			if desired == 0 {
 				desired = perm
 			}
-			if err := os.Chmod(state.path, desired); err != nil {
-				return nil, &patchError{Message: fmt.Sprintf("failed to restore permissions for %s: %v", state.relativePath, err)}
+
+			specialBits := state.originalMode & (fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
+			needsChmod := specialBits != 0
+			if !needsChmod {
+				info, statErr := os.Stat(state.path)
+				if statErr != nil {
+					return nil, &patchError{Message: fmt.Sprintf("failed to stat %s after write: %v", state.relativePath, statErr)}
+				}
+				current := info.Mode() & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
+				if current != desired {
+					needsChmod = true
+				}
+			}
+
+			if needsChmod {
+				if err := os.Chmod(state.path, desired); err != nil {
+					return nil, &patchError{Message: fmt.Sprintf("failed to restore permissions for %s: %v", state.relativePath, err)}
+				}
 			}
 		}
 
