@@ -97,6 +97,22 @@ func (c *Context) CommandExists(name string) bool {
 	return err == nil
 }
 
+// RunCommandOutput resolves and executes a command, returning its combined
+// stdout/stderr output. Intended for lightweight, read-only probes such as
+// `go version` and `go env -json`.
+func (c *Context) RunCommandOutput(name string, args ...string) (string, error) {
+	if name == "" {
+		return "", errors.New("command name must be provided")
+	}
+	path, err := c.lookPath(name)
+	if err != nil {
+		return "", err
+	}
+	cmd := exec.Command(path, args...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 // FindFirstWithSuffix walks the repository looking for a file with any of the
 // provided suffixes and returns the first match. The suffix comparison is
 // case-insensitive and should include the dot (e.g. ".csproj").

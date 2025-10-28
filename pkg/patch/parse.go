@@ -73,7 +73,7 @@ func (e *Error) Error() string {
 	return "patch error"
 }
 
-// Options configures how patch application behaves for both filesystem and
+// Options configure how the patch application behaves for both filesystem and
 // in-memory operations.
 type Options struct {
 	IgnoreWhitespace bool

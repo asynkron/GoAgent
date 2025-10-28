@@ -41,3 +41,4 @@ go.work.sum
 /.idea/vcs.xml
 /cmd/.openagent/
 /cmd/history.json
+/history.json

@@ -1,6 +1,7 @@
 package bootprobe
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,10 +9,10 @@ import (
 	"strings"
 )
 
-// BootProbeResult mirrors the structure returned by the upstream TypeScript
+// Result BootProbeResult mirrors the structure returned by the upstream TypeScript
 // implementation and captures the detected capabilities of the current project
 // and execution environment.
-type BootProbeResult struct {
+type Result struct {
 	Node       *NodeProbeResult
 	Python     *PythonProbeResult
 	DotNet     *SimpleProbeResult
@@ -96,8 +97,8 @@ type OSResult struct {
 }
 
 // Run executes all boot probes and returns a consolidated result structure.
-func Run(ctx *Context) BootProbeResult {
-	return BootProbeResult{
+func Run(ctx *Context) Result {
+	return Result{
 		Node:       runNodeProbe(ctx),
 		Python:     runPythonProbe(ctx),
 		DotNet:     runDotNetProbe(ctx),
@@ -192,7 +193,7 @@ func runPythonProbe(ctx *Context) *PythonProbeResult {
 }
 
 func runDotNetProbe(ctx *Context) *SimpleProbeResult {
-	indicators := []string{}
+	var indicators []string
 	if path, ok := ctx.FindFirstWithSuffix(".csproj", ".fsproj"); ok {
 		indicators = append(indicators, filepath.Base(path))
 	}
@@ -213,15 +214,88 @@ func runDotNetProbe(ctx *Context) *SimpleProbeResult {
 
 func runGoProbe(ctx *Context) *SimpleProbeResult {
 	indicators := collectExistingFiles(ctx, []string{"go.mod", "go.sum", "go.work"})
-	commands := commandStatuses(ctx, "go")
+	// Check for common Go-related commands beyond just `go`.
+	commands := commandStatuses(ctx, "go", "gofmt", "goimports", "golangci-lint", "staticcheck")
 	if len(indicators) == 0 {
 		return nil
 	}
+
+	// Try to capture `go version`.
+	if ctx.CommandExists("go") {
+		if out, err := ctx.RunCommandOutput("go", "version"); err == nil {
+			ver := strings.TrimSpace(out)
+			if ver != "" {
+				indicators = append(indicators, "go version: "+ver)
+			}
+		}
+	}
+
+	// Parse toolchain directive from go.mod if present (Go 1.21+ feature).
+	if ctx.HasFile("go.mod") {
+		if data, err := ctx.ReadFile("go.mod"); err == nil {
+			if tc := parseGoToolchain(string(data)); tc != "" {
+				indicators = append(indicators, "toolchain: "+tc)
+			}
+		}
+	}
+
+	// Query `go env -json` for key environment values.
+	if ctx.CommandExists("go") {
+		if out, err := ctx.RunCommandOutput("go", "env", "-json"); err == nil {
+			type goEnv struct {
+				GOPATH     string `json:"GOPATH"`
+				GOROOT     string `json:"GOROOT"`
+				GOMODCACHE string `json:"GOMODCACHE"`
+			}
+			var env goEnv
+			if jsonErr := json.Unmarshal([]byte(out), &env); jsonErr == nil {
+				if env.GOROOT != "" {
+					indicators = append(indicators, "GOROOT="+env.GOROOT)
+				}
+				if env.GOPATH != "" {
+					indicators = append(indicators, "GOPATH="+env.GOPATH)
+				}
+				if env.GOMODCACHE != "" {
+					indicators = append(indicators, "GOMODCACHE="+env.GOMODCACHE)
+				}
+			}
+		}
+	}
+
 	return &SimpleProbeResult{
 		Detected:   true,
 		Indicators: dedupeStrings(indicators),
 		Commands:   commands,
 	}
+}
+
+// parseGoToolchain extracts the value of the `toolchain` directive from a go.mod
+// file content. It returns an empty string if not present.
+func parseGoToolchain(modFile string) string {
+	// A very small and robust parser: scan lines and look for a line starting
+	// with "toolchain" followed by the toolchain string.
+	// Examples:
+	//   toolchain go1.22.3
+	//   toolchain golang.org/toolchain@v0.0.1-go1.22.0
+	if modFile == "" {
+		return ""
+	}
+	lines := strings.Split(modFile, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "toolchain ") {
+			value := strings.TrimSpace(strings.TrimPrefix(trimmed, "toolchain "))
+			// Strip optional trailing comments.
+			if idx := strings.IndexAny(value, "\t #"); idx >= 0 {
+				value = strings.TrimSpace(value[:idx])
+			}
+			return value
+		}
+	}
+	return ""
 }
 
 func runRustProbe(ctx *Context) *RustProbeResult {
@@ -238,8 +312,8 @@ func runRustProbe(ctx *Context) *RustProbeResult {
 }
 
 func runJVMProbe(ctx *Context) *JVMProbeResult {
-	indicators := []string{}
-	buildTools := []string{}
+	var indicators []string
+	var buildTools []string
 
 	if ctx.HasFile("pom.xml") || ctx.HasFile("pom.yaml") {
 		indicators = append(indicators, "Maven project")
@@ -270,7 +344,7 @@ func runJVMProbe(ctx *Context) *JVMProbeResult {
 }
 
 func runGitProbe(ctx *Context) *SimpleProbeResult {
-	indicators := []string{}
+	var indicators []string
 	if ctx.HasDir(".git") {
 		indicators = append(indicators, ".git directory")
 	} else if path, ok := ctx.FindFirstFileNamed(".gitmodules"); ok {
@@ -511,13 +585,13 @@ func bytesContainsAny(data []byte, needles []string) bool {
 }
 
 // HasCapabilities reports whether any tooling was detected.
-func (r BootProbeResult) HasCapabilities() bool {
+func (r Result) HasCapabilities() bool {
 	return r.Node != nil || r.Python != nil || r.DotNet != nil || r.Go != nil || r.Rust != nil || r.JVM != nil || r.Git != nil || len(r.Containers) > 0 || len(r.Linters) > 0 || len(r.Formatters) > 0
 }
 
-// SummaryLines returns the human readable bullet lines describing the detected
+// SummaryLines returns the human-readable bullet lines describing the detected
 // capabilities.
-func (r BootProbeResult) SummaryLines() []string {
+func (r Result) SummaryLines() []string {
 	var lines []string
 
 	if r.Node != nil {
@@ -556,10 +630,10 @@ func (r BootProbeResult) SummaryLines() []string {
 	return lines
 }
 
-// FormatSummary renders a BootProbeResult into a human readable summary. The
+// FormatSummary renders a BootProbeResult into a human-readable summary. The
 // OS line is always included, followed by detected capabilities rendered as
 // bullet points.
-func FormatSummary(result BootProbeResult) string {
+func FormatSummary(result Result) string {
 	osLine := FormatOSLine(result.OS)
 	lines := result.SummaryLines()
 	if len(lines) == 0 {
@@ -581,7 +655,7 @@ func FormatOSLine(osResult OSResult) string {
 	return fmt.Sprintf("OS: %s/%s", osResult.GOOS, osResult.GOARCH)
 }
 
-// CombineAugmentation prepends the boot probe summary to any user supplied
+// CombineAugmentation prepends the boot probe summary to any user-supplied
 // instructions so that both are available to the runtime.
 func CombineAugmentation(summary, user string) string {
 	summary = strings.TrimSpace(summary)
