@@ -11,7 +11,7 @@ import (
 	"github.com/asynkron/goagent/internal/core/schema"
 )
 
-func TestRequestPlanIncludesResponseFormat(t *testing.T) {
+func TestRequestPlanUsesFunctionToolShape(t *testing.T) {
 	t.Parallel()
 
 	var (
@@ -71,29 +71,31 @@ func TestRequestPlanIncludesResponseFormat(t *testing.T) {
 		t.Fatalf("expected request host %s to match server host %s", requestHost, parsedURL.Host)
 	}
 
-	format, ok := captured["response_format"].(map[string]any)
+	// Validate Responses API function tool shape (flat function entry)
+	tools, ok := captured["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected tools to contain one entry, got %T (len=%d)", captured["tools"], len(tools))
+	}
+	t0, ok := tools[0].(map[string]any)
 	if !ok {
-		t.Fatalf("expected response_format to be present in request")
+		t.Fatalf("expected tools[0] to be an object")
 	}
-
-	if got := format["type"]; got != "json_schema" {
-		t.Fatalf("expected response_format.type=json_schema, got %v", got)
+	if t0["type"] != "function" {
+		t.Fatalf("expected tools[0].type=function, got %v", t0["type"])
 	}
-
-	schemaEnvelope, ok := format["json_schema"].(map[string]any)
+	if t0["name"] != schema.ToolName {
+		t.Fatalf("expected tools[0].name=%s, got %v", schema.ToolName, t0["name"])
+	}
+	params, ok := t0["parameters"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected response_format.json_schema to be an object")
+		t.Fatalf("expected tools[0].parameters to be an object")
+	}
+	if _, ok := params["type"].(string); !ok {
+		t.Fatalf("expected parameters schema to include a type field")
 	}
 
-	if strict, _ := schemaEnvelope["strict"].(bool); !strict {
-		t.Fatalf("expected response_format.json_schema.strict to be true")
-	}
-
-	if name, _ := schemaEnvelope["name"].(string); name != schema.ToolName {
-		t.Fatalf("expected schema name %q, got %q", schema.ToolName, name)
-	}
-
-	if _, ok := schemaEnvelope["schema"].(map[string]any); !ok {
-		t.Fatalf("expected embedded schema to be present")
+	// Validate tool_choice required
+	if captured["tool_choice"] != "required" {
+		t.Fatalf("expected tool_choice=required, got %v", captured["tool_choice"])
 	}
 }

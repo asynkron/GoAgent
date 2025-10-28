@@ -349,7 +349,7 @@ func enforceObservationLimit(payload *PlanObservationPayload) {
 
 // buildShellCommand normalizes the shell string ("/bin/bash", "bash -lc", etc.)
 // before wiring it up with the user's command. Supporting embedded flags lets
-// us accept either the legacy "bash" input or newer "/bin/bash -lc" strings
+// us accept both shorthand forms like "bash" and explicit "/bin/bash -lc" strings
 // returned by the assistant without failing at exec time.
 func buildShellCommand(ctx context.Context, shell, run string) (*exec.Cmd, error) {
 	parts := strings.Fields(shell)

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/charmbracelet/glamour"
 	"github.com/joho/godotenv"
 
 	"github.com/asynkron/goagent/internal/bootprobe"
@@ -39,7 +38,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	defaultModel := os.Getenv("OPENAI_MODEL")
 	if defaultModel == "" {
-		defaultModel = "gpt-5"
+		// Use a widely-supported, tool-capable model by default.
+		defaultModel = "gpt-4o"
 	}
 
 	defaultReasoning := os.Getenv("OPENAI_REASONING_EFFORT")
@@ -51,6 +51,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	reasoningEffort := flagSet.String("reasoning-effort", defaultReasoning, "Reasoning effort hint forwarded to OpenAI (low, medium, high)")
 	promptAugmentation := flagSet.String("augment", "", "additional system prompt instructions appended after the default prompt")
 	baseURL := flagSet.String("openai-base-url", defaultBaseURL, "override the OpenAI API base URL (optional)")
+	// Optional: submit a prompt immediately to see streaming deltas without extra wiring.
+	prompt := flagSet.String("prompt", "", "submit this prompt immediately and stream the assistant response")
 
 	if err := flagSet.Parse(args); err != nil {
 		return 2
@@ -93,19 +95,30 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	outputs := agent.Outputs()
 	var wg sync.WaitGroup
+	// Track whether we've printed streaming deltas so we can avoid duplicating
+	// content when the final assistant_message event arrives.
+	var printedDelta bool
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for evt := range outputs {
+			if evt.Type == runtime.EventTypeAssistantDelta {
+				// Streamed chunk: print as-is for a smooth, incremental experience.
+				// We intentionally avoid Glamour here because partial markdown often
+				// renders poorly; the final message can be rendered nicely if needed.
+				fmt.Fprint(stdout, evt.Message)
+				printedDelta = true
+				continue
+			}
 			if evt.Type == runtime.EventTypeAssistantMessage {
-				rendered, err := glamour.Render(evt.Message, "dark")
-				if err != nil {
-					// Fall back to the plain message if Glamour rendering fails so the user still
-					// sees the assistant output.
-					fmt.Fprintln(stdout, evt.Message)
-				} else {
-					fmt.Fprint(stdout, rendered)
+				if printedDelta {
+					// Content already streamed; just end the line neatly.
+					fmt.Fprintln(stdout)
+					printedDelta = false
+					continue
 				}
+				// Print plain content (no markdown rendering dependency).
+				fmt.Fprintln(stdout, evt.Message)
 			} else {
 				level := string(evt.Level)
 				if level != "" {
@@ -132,7 +145,20 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}()
 
-	if err := agent.Run(ctx); err != nil {
+	// Run the runtime in the background so we can optionally submit a prompt immediately
+	// (similar to cmd/sse behavior where we call SubmitPrompt after starting Run).
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- agent.Run(ctx)
+	}()
+
+	// If a prompt is provided, submit it right away so deltas stream to stdout.
+	if p := strings.TrimSpace(*prompt); p != "" {
+		agent.SubmitPrompt(p)
+	}
+
+	// Wait for the runtime to finish and handle any error.
+	if err := <-runErrCh; err != nil {
 		fmt.Fprintf(stderr, "runtime error: %v\n", err)
 		wg.Wait()
 		return 1

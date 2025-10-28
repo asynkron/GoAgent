@@ -14,6 +14,60 @@ Go 1.25 (tested with 1.25.1) or newer is required to build the runtime.
 go run ./cmd --model gpt-4.1
 ```
 
+### HTTP SSE streaming example
+
+This repo includes a minimal SSE server that streams assistant tokens in real time.
+
+Run the server:
+
+```bash
+OPENAI_API_KEY=sk-... go run ./cmd/sse
+``)
+
+Then in another shell, test streaming with curl (you should see data lines appear incrementally):
+
+```bash
+curl -N "http://localhost:8080/stream?q=Write%20a%20haiku%20about%20autumn"
+```
+
+Notes and troubleshooting:
+
+- The runtime emits two kinds of assistant events:
+  - `assistant_delta`: the streaming chunks; these arrive token-by-token.
+
+CLI quick start with streaming deltas
+
+You can now run the CLI and immediately see streaming assistant deltas by passing a prompt:
+
+```
+OPENAI_API_KEY=sk-... go run ./cmd -prompt "Say hello in 3 words"
+```
+
+Optional environment variables:
+
+- `OPENAI_MODEL` (default: `gpt-5`)
+- `OPENAI_BASE_URL` (custom API base, optional)
+- `OPENAI_REASONING_EFFORT` (`low`, `medium`, `high`)
+
+If you prefer an HTTP/SSE example, run:
+
+```
+OPENAI_API_KEY=sk-... go run ./cmd/sse
+curl -N "http://localhost:8080/stream?q=Say+hello+in+3+words"
+```
+  - `assistant_message`: the final consolidated content at the end of the stream.
+- SSE server requirements to avoid buffering:
+  - Set headers: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`.
+  - Use `http.Flusher` and call `Flush()` after each event write.
+  - Do not wrap `ResponseWriter` with gzip or other buffering middleware.
+- If you run behind nginx or similar proxies, ensure buffering is disabled and HTTP/1.1 is used end-to-end:
+  - `proxy_http_version 1.1;`
+  - `proxy_set_header Connection "keep-alive";`
+  - `proxy_buffering off;`
+  - `chunked_transfer_encoding on;` (or leave default if supported).
+- In browsers, prefer `EventSource` or a streaming `fetch()` reader to consume tokens incrementally.
+
+
 The binary reads prompts from `stdin` and prints runtime events to `stdout`. Each
 prompt is currently echoed back to demonstrate the queue wiring. Type `cancel`
 to simulate a cancel request or `exit` / `quit` to stop the runtime gracefully.
@@ -26,7 +80,7 @@ the queues directly:
 ```go
 rt, _ := runtime.NewRuntime(runtime.RuntimeOptions{
     APIKey:     "...",
-    APIBaseURL: "https://api.openai.com/v1/chat/completions", // Optional override for self-hosted gateways.
+    APIBaseURL: "https://api.openai.com/v1", // Optional override for self-hosted gateways.
 })
 go rt.Run(context.Background())
 
@@ -48,4 +102,4 @@ The runtime honours the following environment variables and flags:
 * `OPENAI_API_KEY` (required) – API key used for all OpenAI requests.
 * `OPENAI_MODEL` / `--model` – default model identifier.
 * `OPENAI_REASONING_EFFORT` / `--reasoning-effort` – optional reasoning effort hint.
-* `OPENAI_BASE_URL` / `--openai-base-url` – optional override for the Chat Completions endpoint, useful when routing traffic through a proxy or gateway.
+* `OPENAI_BASE_URL` / `--openai-base-url` – optional override for the OpenAI API base URL (e.g., https://api.openai.com/v1), useful when routing through a proxy or gateway.

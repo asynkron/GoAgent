@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -132,33 +133,12 @@ func TestPlanExecutionLoopPausesForHumanInput(t *testing.T) {
 		t.Fatalf("failed to marshal plan: %v", err)
 	}
 
-	completion := chatCompletionResponse{Choices: []struct {
-		Message struct {
-			ToolCalls []struct {
-				ID       string `json:"id"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"message"`
-	}{{}}}
-	completion.Choices[0].Message.ToolCalls = []struct {
-		ID       string `json:"id"`
-		Function struct {
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-		} `json:"function"`
-	}{{ID: "call-1"}}
-	completion.Choices[0].Message.ToolCalls[0].Function.Name = schema.ToolName
-	completion.Choices[0].Message.ToolCalls[0].Function.Arguments = string(planJSON)
-
-	body, err := json.Marshal(completion)
-	if err != nil {
-		t.Fatalf("failed to marshal completion: %v", err)
-	}
-
-	transport := &stubTransport{body: body, statusCode: http.StatusOK}
+	// Simulate OpenAI Responses SSE stream containing a function call with the plan JSON
+	sse := "" +
+		"data: {\"type\":\"response.function_call.delta\",\"name\":" + strconv.Quote(schema.ToolName) + ",\"call_id\":\"call-1\"}\n\n" +
+		"data: {\"type\":\"response.function_call.delta\",\"arguments\":" + strconv.Quote(string(planJSON)) + "}\n\n" +
+		"data: [DONE]\n\n"
+	transport := &stubTransport{body: []byte(sse), statusCode: http.StatusOK}
 
 	client, err := NewOpenAIClient("test-key", "gpt-4o", "", "")
 	if err != nil {
@@ -239,33 +219,12 @@ func TestPlanExecutionLoopHandsFreeCompletes(t *testing.T) {
 		t.Fatalf("failed to marshal plan: %v", err)
 	}
 
-	completion := chatCompletionResponse{Choices: []struct {
-		Message struct {
-			ToolCalls []struct {
-				ID       string `json:"id"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"message"`
-	}{{}}}
-	completion.Choices[0].Message.ToolCalls = []struct {
-		ID       string `json:"id"`
-		Function struct {
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-		} `json:"function"`
-	}{{ID: "call-1"}}
-	completion.Choices[0].Message.ToolCalls[0].Function.Name = schema.ToolName
-	completion.Choices[0].Message.ToolCalls[0].Function.Arguments = string(planJSON)
-
-	body, err := json.Marshal(completion)
-	if err != nil {
-		t.Fatalf("failed to marshal completion: %v", err)
-	}
-
-	transport := &stubTransport{body: body, statusCode: http.StatusOK}
+	// Simulate OpenAI Responses SSE stream containing the hands-free completion plan
+	sse := "" +
+		"data: {\"type\":\"response.function_call.delta\",\"name\":" + strconv.Quote(schema.ToolName) + ",\"call_id\":\"call-1\"}\n\n" +
+		"data: {\"type\":\"response.function_call.delta\",\"arguments\":" + strconv.Quote(string(planJSON)) + "}\n\n" +
+		"data: [DONE]\n\n"
+	transport := &stubTransport{body: []byte(sse), statusCode: http.StatusOK}
 
 	client, err := NewOpenAIClient("test-key", "gpt-4o", "", "")
 	if err != nil {
@@ -357,33 +316,12 @@ func TestPlanExecutionLoopHandsFreeStopsAtPassLimit(t *testing.T) {
 		t.Fatalf("failed to marshal plan: %v", err)
 	}
 
-	completion := chatCompletionResponse{Choices: []struct {
-		Message struct {
-			ToolCalls []struct {
-				ID       string `json:"id"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"message"`
-	}{{}}}
-	completion.Choices[0].Message.ToolCalls = []struct {
-		ID       string `json:"id"`
-		Function struct {
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-		} `json:"function"`
-	}{{ID: "call-2"}}
-	completion.Choices[0].Message.ToolCalls[0].Function.Name = schema.ToolName
-	completion.Choices[0].Message.ToolCalls[0].Function.Arguments = string(planJSON)
-
-	body, err := json.Marshal(completion)
-	if err != nil {
-		t.Fatalf("failed to marshal completion: %v", err)
-	}
-
-	transport := &stubTransport{body: body, statusCode: http.StatusOK}
+	// Simulate OpenAI Responses SSE stream for a single function call
+	sse := "" +
+		"data: {\"type\":\"response.function_call.delta\",\"name\":" + strconv.Quote(schema.ToolName) + ",\"call_id\":\"call-2\"}\n\n" +
+		"data: {\"type\":\"response.function_call.delta\",\"arguments\":" + strconv.Quote(string(planJSON)) + "}\n\n" +
+		"data: [DONE]\n\n"
+	transport := &stubTransport{body: []byte(sse), statusCode: http.StatusOK}
 
 	client, err := NewOpenAIClient("test-key", "gpt-4o", "", "")
 	if err != nil {

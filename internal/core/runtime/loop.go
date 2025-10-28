@@ -262,13 +262,28 @@ func (r *Runtime) requestPlan(ctx context.Context) (*PlanResponse, ToolCall, err
 		var toolCall ToolCall
 		var err error
 		if r.options.UseStreaming {
-			// Stream assistant response: emit only text deltas during streaming.
-			toolCall, err = r.client.RequestPlanStreaming(ctx, history, func(s string) {
+			// Stream assistant response using the modern Responses API only.
+			// Emit deltas as they arrive and accumulate them to emit a final
+			// consolidated message when done.
+			var finalBuilder strings.Builder
+			streamFn := func(s string) {
 				if strings.TrimSpace(s) == "" {
 					return
 				}
-				r.emit(RuntimeEvent{Type: EventTypeAssistantMessage, Message: s})
-			})
+				finalBuilder.WriteString(s)
+				r.emit(RuntimeEvent{Type: EventTypeAssistantDelta, Message: s})
+			}
+
+			toolCall, err = r.client.RequestPlanStreamingResponses(ctx, history, streamFn)
+			// After streaming completes (no error), emit a final assistant message
+			// with the consolidated content so hosts that don't handle deltas can
+			// still present the assistant's reply.
+			if err == nil {
+				consolidated := strings.TrimSpace(finalBuilder.String())
+				if consolidated != "" {
+					r.emit(RuntimeEvent{Type: EventTypeAssistantMessage, Message: consolidated})
+				}
+			}
 		} else {
 			// Non-streaming path preserves historical behavior expected by tests.
 			toolCall, err = r.client.RequestPlan(ctx, history)
