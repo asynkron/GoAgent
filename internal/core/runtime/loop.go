@@ -259,7 +259,20 @@ func (r *Runtime) requestPlan(ctx context.Context) (*PlanResponse, ToolCall, err
 
 		r.writeHistoryLog(history)
 
-		toolCall, err := r.client.RequestPlan(ctx, history)
+		var toolCall ToolCall
+		var err error
+		if r.options.UseStreaming {
+			// Stream assistant response: emit only text deltas during streaming.
+			toolCall, err = r.client.RequestPlanStreaming(ctx, history, func(s string) {
+				if strings.TrimSpace(s) == "" {
+					return
+				}
+				r.emit(RuntimeEvent{Type: EventTypeAssistantMessage, Message: s})
+			})
+		} else {
+			// Non-streaming path preserves historical behavior expected by tests.
+			toolCall, err = r.client.RequestPlan(ctx, history)
+		}
 		if err != nil {
 			return nil, ToolCall{}, err
 		}

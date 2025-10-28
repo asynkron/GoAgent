@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -165,6 +166,7 @@ type chatCompletionRequest struct {
 	ToolChoice      toolChoice          `json:"tool_choice"`
 	ReasoningEffort *string             `json:"reasoning_effort,omitempty"`
 	ResponseFormat  responseFormat      `json:"response_format"`
+	Stream          bool                `json:"stream,omitempty"`
 }
 
 type chatMessage struct {
@@ -229,4 +231,119 @@ type chatCompletionResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
+}
+
+// RequestPlanStreaming behaves like RequestPlan but enables SSE streaming. It invokes
+// onDelta for assistant-visible content deltas while buffering tool_call deltas
+// until the stream completes. Only after the final chunk has been received does it
+// return the ToolCall needed to proceed with validation and execution.
+func (c *OpenAIClient) RequestPlanStreaming(ctx context.Context, history []ChatMessage, onDelta func(string)) (ToolCall, error) {
+	payload := chatCompletionRequest{
+		Model:    c.model,
+		Messages: buildMessages(history),
+		Tools: []toolSpecification{{
+			Type:     "function",
+			Function: functionDefinition{Name: c.tool.Name, Description: c.tool.Description, Parameters: c.tool.Parameters},
+		}},
+		ToolChoice: toolChoice{Type: "function", Function: &toolChoiceFunction{Name: c.tool.Name}},
+		ResponseFormat: responseFormat{
+			Type: "json_schema",
+			JSONSchema: jsonSchemaDefinition{
+				Name:   c.tool.Name,
+				Strict: true,
+				Schema: c.tool.Parameters,
+			},
+		},
+		Stream: true,
+	}
+	if c.reasoningEffort != "" {
+		payload.ReasoningEffort = &c.reasoningEffort
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return ToolCall{}, fmt.Errorf("openai: encode request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
+	if err != nil {
+		return ToolCall{}, fmt.Errorf("openai: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return ToolCall{}, fmt.Errorf("openai: do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
+		return ToolCall{}, fmt.Errorf("openai: status %s: %s", resp.Status, string(msg))
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	var toolID, toolName, toolArgs string
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return ToolCall{}, fmt.Errorf("openai: stream read: %w", err)
+		}
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		chunkData := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+		if chunkData == "[DONE]" {
+			break
+		}
+
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						ID       string `json:"id"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(chunkData), &chunk); err != nil {
+			// Ignore malformed keepalive lines
+			continue
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		delta := chunk.Choices[0].Delta
+		if onDelta != nil && delta.Content != "" {
+			onDelta(delta.Content)
+		}
+		if len(delta.ToolCalls) > 0 {
+			call := delta.ToolCalls[0]
+			if call.ID != "" {
+				toolID = call.ID
+			}
+			if call.Function.Name != "" {
+				toolName = call.Function.Name
+			}
+			if call.Function.Arguments != "" {
+				toolArgs += call.Function.Arguments
+			}
+		}
+	}
+
+	if toolName == "" {
+		return ToolCall{}, errors.New("openai: assistant did not call the tool (stream)")
+	}
+	return ToolCall{ID: toolID, Name: toolName, Arguments: toolArgs}, nil
 }

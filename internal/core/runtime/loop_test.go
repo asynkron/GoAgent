@@ -37,7 +37,7 @@ func TestLoopRequestsPromptWhenInteractive(t *testing.T) {
 	close(inputs)
 
 	rt := &Runtime{
-		options:   RuntimeOptions{},
+		options:   RuntimeOptions{UseStreaming: false},
 		inputs:    inputs,
 		outputs:   make(chan RuntimeEvent, 2),
 		closed:    make(chan struct{}),
@@ -74,7 +74,7 @@ func TestLoopHandsFreeSkipsInitialPromptRequest(t *testing.T) {
 	close(inputs)
 
 	rt := &Runtime{
-		options:   RuntimeOptions{HandsFree: true},
+		options:   RuntimeOptions{HandsFree: true, UseStreaming: false},
 		inputs:    inputs,
 		outputs:   make(chan RuntimeEvent, 2),
 		closed:    make(chan struct{}),
@@ -171,6 +171,7 @@ func TestPlanExecutionLoopPausesForHumanInput(t *testing.T) {
 			Model:        "gpt-4o",
 			OutputBuffer: 16,
 			OutputWriter: io.Discard,
+			UseStreaming: false,
 		},
 		inputs:    make(chan InputEvent, 1),
 		outputs:   make(chan RuntimeEvent, 16),
@@ -278,6 +279,7 @@ func TestPlanExecutionLoopHandsFreeCompletes(t *testing.T) {
 			OutputBuffer: 16,
 			OutputWriter: io.Discard,
 			HandsFree:    true,
+			UseStreaming: false,
 		},
 		inputs:    make(chan InputEvent, 1),
 		outputs:   make(chan RuntimeEvent, 16),
@@ -403,6 +405,7 @@ func TestPlanExecutionLoopHandsFreeStopsAtPassLimit(t *testing.T) {
 			OutputWriter: io.Discard,
 			HandsFree:    true,
 			MaxPasses:    1,
+			UseStreaming: false,
 		},
 		inputs:    make(chan InputEvent, 1),
 		outputs:   make(chan RuntimeEvent, 16),

@@ -82,6 +82,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		ReasoningEffort:         *reasoningEffort,
 		SystemPromptAugment:     combinedAugment,
 		DisableOutputForwarding: true,
+		UseStreaming:            true,
 	}
 
 	agent, err := runtime.NewRuntime(options)

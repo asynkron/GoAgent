@@ -54,6 +54,12 @@ type RuntimeOptions struct {
 	// helpful when the host listens to Outputs directly.
 	DisableOutputForwarding bool
 
+	// UseStreaming enables SSE streaming for OpenAI responses. When true, the
+	// runtime will stream assistant deltas to outputs and defer planning and
+	// validation until the final chunk is received. Defaults to false to keep
+	// existing test expectations unchanged.
+	UseStreaming bool
+
 	// EmitTimeout guards against blocking forever when no consumer drains the
 	// output channel. Zero means wait indefinitely.
 	EmitTimeout time.Duration
@@ -122,6 +128,9 @@ func (o *RuntimeOptions) setDefaults() {
 			o.HandsFreeTopic = "Hands-free session"
 		}
 	}
+	// Default to streaming enabled so users see responses token-by-token unless explicitly disabled.
+	// Tests that rely on non-streaming behavior should set UseStreaming: false.
+	o.UseStreaming = true
 }
 
 // validate performs lightweight validation of user supplied options.
