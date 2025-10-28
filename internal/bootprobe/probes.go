@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -24,6 +26,7 @@ type Result struct {
 	Linters    []ToolingProbeResult
 	Formatters []ToolingProbeResult
 	OS         OSResult
+	Shell      ShellProbeResult
 }
 
 // CommandStatus records whether a particular command is available on PATH.
@@ -96,6 +99,16 @@ type OSResult struct {
 	Distribution string
 }
 
+// ShellResult summarises the user's shells.
+// Default: the login shell configured for the account (e.g. zsh).
+// Current: the parent process shell of the CLI invocation (e.g. zsh, bash, fish).
+// Source: how Default was determined (dscl, getent, passwd, env).
+type ShellProbeResult struct {
+	Default string
+	Current string
+	Source  string
+}
+
 // Run executes all boot probes and returns a consolidated result structure.
 func Run(ctx *Context) Result {
 	return Result{
@@ -110,6 +123,7 @@ func Run(ctx *Context) Result {
 		Linters:    runLintProbes(ctx),
 		Formatters: runFormatterProbes(ctx),
 		OS:         detectOS(),
+		Shell:      detectShell(ctx),
 	}
 }
 
@@ -479,6 +493,91 @@ func detectOS() OSResult {
 	}
 }
 
+func detectShell(ctx *Context) ShellProbeResult {
+	var res ShellProbeResult
+
+	// Detect default login shell
+	if u, err := user.Current(); err == nil && u != nil {
+		username := u.Username
+		// On macOS, prefer dscl for accuracy with Directory Services
+		if runtime.GOOS == "darwin" && ctx.CommandExists("dscl") {
+			if out, err := ctx.RunCommandOutput("dscl", ".", "-read", "/Users/"+username, "UserShell"); err == nil {
+				// output like: "UserShell: /bin/zsh"
+				fields := strings.Fields(strings.TrimSpace(out))
+				if len(fields) >= 2 {
+					res.Default = basename(fields[len(fields)-1])
+					res.Source = "dscl"
+				}
+			}
+		}
+		// On Unix, getent passwd is canonical
+		if res.Default == "" && ctx.CommandExists("getent") {
+			if out, err := ctx.RunCommandOutput("getent", "passwd", username); err == nil {
+				// colon separated; shell is field 7
+				parts := strings.Split(strings.TrimSpace(out), ":")
+				if len(parts) >= 7 {
+					res.Default = basename(parts[6])
+					res.Source = "getent"
+				}
+			}
+		}
+		// Fallback: parse /etc/passwd
+		if res.Default == "" {
+			if data, err := os.ReadFile("/etc/passwd"); err == nil {
+				lines := strings.Split(string(data), "\n")
+				for _, line := range lines {
+					if line == "" || strings.HasPrefix(line, "#") {
+						continue
+					}
+					parts := strings.Split(line, ":")
+					if len(parts) >= 7 && parts[0] == username {
+						res.Default = basename(parts[6])
+						res.Source = "passwd"
+						break
+					}
+				}
+			}
+		}
+		// Last resort: $SHELL
+		if res.Default == "" {
+			if sh := os.Getenv("SHELL"); sh != "" {
+				res.Default = basename(sh)
+				res.Source = "env"
+			}
+		}
+	}
+
+	// Detect current session shell (parent process command)
+	ppid := os.Getppid()
+	if ctx.CommandExists("ps") {
+		if out, err := ctx.RunCommandOutput("ps", "-p", strconv.Itoa(ppid), "-o", "comm="); err == nil {
+			cur := strings.TrimSpace(out)
+			if cur != "" {
+				res.Current = basename(cur)
+			}
+		}
+	}
+	if res.Current == "" {
+		if sh := os.Getenv("SHELL"); sh != "" {
+			res.Current = basename(sh)
+		}
+	}
+
+	return res
+}
+
+func basename(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	// Avoid importing an extra package for a simple basename of paths/commands
+	if idx := strings.LastIndex(path, "/"); idx >= 0 && idx+1 < len(path) {
+		return path[idx+1:]
+	}
+	return path
+}
+
 func collectExistingFiles(ctx *Context, files []string) []string {
 	var results []string
 	for _, file := range files {
@@ -635,8 +734,12 @@ func (r Result) SummaryLines() []string {
 // bullet points.
 func FormatSummary(result Result) string {
 	osLine := FormatOSLine(result.OS)
+	shellLine := FormatShellLine(result.Shell)
 	lines := result.SummaryLines()
 	if len(lines) == 0 {
+		if shellLine != "" {
+			return osLine + "\n" + shellLine
+		}
 		return osLine
 	}
 
@@ -644,7 +747,26 @@ func FormatSummary(result Result) string {
 		lines[i] = "- " + line
 	}
 
-	return strings.Join(append([]string{osLine}, lines...), "\n")
+	header := []string{osLine}
+	if shellLine != "" {
+		header = append(header, shellLine)
+	}
+	return strings.Join(append(header, lines...), "\n")
+}
+
+// FormatShellLine renders a single line describing the user's shells.
+func FormatShellLine(shell ShellProbeResult) string {
+	var parts []string
+	if shell.Default != "" {
+		parts = append(parts, "default="+shell.Default)
+	}
+	if shell.Current != "" {
+		parts = append(parts, "current="+shell.Current)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Shell: " + strings.Join(parts, "; ")
 }
 
 // FormatOSLine renders a single line describing the host OS.
