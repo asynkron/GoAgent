@@ -59,6 +59,11 @@ type model struct {
 
 	// Transcript items (dynamic rendering on resize)
 	items []transcriptItem
+
+	// Plan tracking
+	planSteps []runtimepkg.PlanStep
+	planIndex map[string]int
+	executing map[string]bool
 }
 
 func newModel(agent *runtimepkg.Runtime, outputs <-chan runtimepkg.RuntimeEvent, cancel context.CancelFunc) *model {
@@ -147,6 +152,30 @@ func (m *model) refresh() {
 	m.vp.GotoBottom()
 }
 
+// recalcLayout recomputes viewport sizes based on current terminal size and
+// the number of lines needed to render the plan panel so it stays visible.
+func (m *model) recalcLayout() {
+	if m.width <= 0 || m.height <= 0 {
+		return
+	}
+	m.ti.Width = m.width
+	plan := m.renderPlan()
+	planLines := 0
+	if strings.TrimSpace(plan) != "" {
+		planLines = strings.Count(plan, "\n")
+		if !strings.HasSuffix(plan, "\n") {
+			planLines += 1
+		}
+	}
+	vpH := m.height - 3 - planLines
+	if vpH < 3 {
+		vpH = 3
+	}
+	m.vp.Width = m.width
+	m.vp.Height = vpH
+	_ = m.rebuildRenderer(m.vp.Width - 2)
+}
+
 func (m *model) appendLine(s string) {
 	m.items = append(m.items, transcriptItem{kind: itemPlain, text: s})
 	m.refresh()
@@ -163,6 +192,122 @@ func (m *model) appendUserBlock(text string) {
 	}
 	m.items = append(m.items, transcriptItem{kind: itemUser, text: text})
 	m.refresh()
+}
+
+// renderPlan builds an inline checklist for the current plan.
+func (m *model) renderPlan() string {
+	if len(m.planSteps) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	// Header
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")).Render("Plan:"))
+	b.WriteString("\n")
+	// Lines
+	for _, step := range m.planSteps {
+		id := step.ID
+		title := strings.TrimSpace(step.Title)
+		if title == "" {
+			title = id
+		}
+		// Determine status
+		status := string(step.Status)
+		if m.executing != nil && m.executing[id] {
+			status = "executing"
+		} else if status == "" {
+			status = "pending"
+		}
+		var box, color string
+		switch status {
+		case string(runtimepkg.PlanCompleted):
+			box, color = "[x]", "70" // green
+		case string(runtimepkg.PlanFailed):
+			box, color = "[!]", "196" // red
+		case "executing":
+			box, color = "[~]", "214" // yellow/orange
+		default:
+			if len(step.WaitingForID) > 0 {
+				box, color = "[ ]", "244" // waiting
+			} else {
+				box, color = "[ ]", "33" // ready
+			}
+		}
+		line := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(box)
+		titleStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(" " + title)
+		b.WriteString(line)
+		b.WriteString(titleStyled)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// setPlan loads the plan steps and builds a fast index.
+func (m *model) setPlan(steps []runtimepkg.PlanStep) {
+	m.planSteps = make([]runtimepkg.PlanStep, len(steps))
+	copy(m.planSteps, steps)
+	m.planIndex = make(map[string]int, len(steps))
+	for i, s := range m.planSteps {
+		m.planIndex[s.ID] = i
+	}
+	if m.executing == nil {
+		m.executing = make(map[string]bool)
+	} else {
+		for k := range m.executing {
+			delete(m.executing, k)
+		}
+	}
+	m.recalcLayout()
+}
+
+// updateStepStatus adjusts the tracked status for a plan step.
+func (m *model) updateStepStatus(stepID string, status any) {
+	if m.planIndex == nil {
+		return
+	}
+	idx, ok := m.planIndex[stepID]
+	if !ok || idx < 0 || idx >= len(m.planSteps) {
+		return
+	}
+	switch v := status.(type) {
+	case runtimepkg.PlanStatus:
+		m.planSteps[idx].Status = v
+		delete(m.executing, stepID)
+	case string:
+		switch strings.ToLower(v) {
+		case "completed":
+			m.planSteps[idx].Status = runtimepkg.PlanCompleted
+			delete(m.executing, stepID)
+		case "failed":
+			m.planSteps[idx].Status = runtimepkg.PlanFailed
+			delete(m.executing, stepID)
+		case "executing":
+			if m.executing == nil {
+				m.executing = make(map[string]bool)
+			}
+			m.executing[stepID] = true
+		default:
+			// pending/waiting
+		}
+	}
+	m.recalcLayout()
+}
+
+// ensureStep adds a step placeholder if it's missing so we can render it
+// inline even when the initial plan payload wasn't parsed.
+func (m *model) ensureStep(stepID, title string) {
+	if stepID == "" {
+		return
+	}
+	if m.planIndex == nil {
+		m.planIndex = make(map[string]int)
+	}
+	if _, ok := m.planIndex[stepID]; ok {
+		return
+	}
+	s := runtimepkg.PlanStep{ID: stepID, Title: title, Status: runtimepkg.PlanPending}
+	m.planSteps = append(m.planSteps, s)
+	m.planIndex[stepID] = len(m.planSteps) - 1
+	m.recalcLayout()
 }
 
 // rebuildRenderer recreates the Glamour renderer with the given wrap width.
@@ -232,14 +377,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.ti.Width = m.width
-		vpH := m.height - 3
-		if vpH < 3 {
-			vpH = 3
-		}
-		m.vp.Width = m.width
-		m.vp.Height = vpH
-		_ = m.rebuildRenderer(m.vp.Width - 2)
+		m.recalcLayout()
 		m.ready = true
 		m.refresh()
 		return m, nil
@@ -273,13 +411,104 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(append(cmds, waitForEvent(m.outputs))...)
 		case runtimepkg.EventTypeAssistantMessage:
+			// Try to load plan if present in metadata.
+			if evt.Metadata != nil {
+				if rawPlan, ok := evt.Metadata["plan"]; ok {
+					switch p := rawPlan.(type) {
+					case []runtimepkg.PlanStep:
+						m.setPlan(p)
+					case []any:
+						steps := make([]runtimepkg.PlanStep, 0, len(p))
+						for _, it := range p {
+							if m1, ok := it.(map[string]any); ok {
+								var s runtimepkg.PlanStep
+								if id, ok := m1["id"].(string); ok {
+									s.ID = id
+								}
+								if title, ok := m1["title"].(string); ok {
+									s.Title = title
+								}
+								if status, ok := m1["status"].(string); ok {
+									s.Status = runtimepkg.PlanStatus(status)
+								}
+								if deps, ok := m1["waitingForId"].([]any); ok {
+									for _, d := range deps {
+										if ds, ok := d.(string); ok {
+											s.WaitingForID = append(s.WaitingForID, ds)
+										}
+									}
+								}
+								steps = append(steps, s)
+							}
+						}
+						if len(steps) > 0 {
+							m.setPlan(steps)
+						}
+					}
+				}
+			}
 			final := m.currentMD.String()
 			m.currentMD.Reset()
 			m.currentRendered = ""
-			m.items = append(m.items, transcriptItem{kind: itemAssistantMD, text: final})
+			if strings.TrimSpace(final) != "" {
+				m.items = append(m.items, transcriptItem{kind: itemAssistantMD, text: final})
+			}
 			m.refresh()
 			m.lastType = evt.Type
 		case runtimepkg.EventTypeStatus:
+			// Update/seed plan step status inline when possible.
+			if evt.Metadata != nil {
+				// If a full plan is included in metadata, load it.
+				if rawPlan, ok := evt.Metadata["plan"]; ok {
+					switch p := rawPlan.(type) {
+					case []runtimepkg.PlanStep:
+						m.setPlan(p)
+						m.refresh()
+						break
+					case []any:
+						steps := make([]runtimepkg.PlanStep, 0, len(p))
+						for _, it := range p {
+							if m1, ok := it.(map[string]any); ok {
+								var s runtimepkg.PlanStep
+								if id, ok := m1["id"].(string); ok {
+									s.ID = id
+								}
+								if title, ok := m1["title"].(string); ok {
+									s.Title = title
+								}
+								if status, ok := m1["status"].(string); ok {
+									s.Status = runtimepkg.PlanStatus(status)
+								}
+								if deps, ok := m1["waitingForId"].([]any); ok {
+									for _, d := range deps {
+										if ds, ok := d.(string); ok {
+											s.WaitingForID = append(s.WaitingForID, ds)
+										}
+									}
+								}
+								steps = append(steps, s)
+							}
+						}
+						if len(steps) > 0 {
+							m.setPlan(steps)
+							m.refresh()
+							break
+						}
+					}
+				}
+				if stepID, ok := evt.Metadata["step_id"].(string); ok && stepID != "" {
+					title, _ := evt.Metadata["title"].(string)
+					m.ensureStep(stepID, title)
+					if st, has := evt.Metadata["status"]; has {
+						m.updateStepStatus(stepID, st)
+					} else {
+						m.updateStepStatus(stepID, "executing")
+					}
+					m.refresh()
+					break
+				}
+			}
+			// Fallback: append status line
 			line := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("[status] ") + evt.Message + "\n"
 			m.appendLine(line)
 		case runtimepkg.EventTypeError:
@@ -308,7 +537,19 @@ func (m model) View() string {
 	if !m.ready {
 		return "Initializing…"
 	}
-	top := m.border.Render(m.vp.View())
+	// Always show the plan panel (if any) above the scrollable log viewport
+	// so it stays visible even when the viewport is scrolled to bottom.
+	plan := m.renderPlan()
+	var topContent strings.Builder
+	if strings.TrimSpace(plan) != "" {
+		topContent.WriteString(plan)
+		if !strings.HasSuffix(plan, "\n") {
+			topContent.WriteString("\n")
+		}
+	}
+	topContent.WriteString(m.vp.View())
+
+	top := m.border.Render(topContent.String())
 	bottom := m.border.Render(m.ti.View())
 	return top + "\n" + bottom
 }

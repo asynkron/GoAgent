@@ -99,6 +99,7 @@ func (r *Runtime) recordPlanResponse(plan *PlanResponse, toolCall ToolCall) int 
 		Level:   StatusLevelInfo,
 		Metadata: map[string]any{
 			"tool_call_id": toolCall.ID,
+			"plan":         trimmedPlan,
 		},
 	})
 
