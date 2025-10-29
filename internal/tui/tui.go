@@ -59,7 +59,8 @@ type model struct {
 
 	// Activity
 	spin       spinner.Model
-	streaming  bool
+	requesting bool // after submit, before first delta
+	streaming  bool // after first delta, until final message
 	flashFrame int
 
 	// Styling
@@ -195,7 +196,11 @@ func (m *model) recalcLayout() {
 	}
 	m.ta.SetWidth(inner)
 	// Inline plan: do not reserve rows; it's part of transcript content.
-	vpH := m.height - 3
+	reserve := 3 // bottom input panel (border + content)
+	if m.requesting || m.streaming {
+		reserve += 1 // gradient bar between panels
+	}
+	vpH := m.height - reserve
 	if vpH < 3 {
 		vpH = 3
 	}
@@ -431,7 +436,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		if m.streaming {
+		if m.requesting || m.streaming {
 			m.flashFrame++
 		}
 	case tea.WindowSizeMsg:
@@ -455,6 +460,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.agent.SubmitPrompt(prompt)
 				m.appendUserBlock(prompt)
 				m.ta.Reset()
+				m.requesting = true
+				m.streaming = false
+				m.flashFrame = 0
+				m.recalcLayout()
 			}
 			return m, tea.Batch(cmds...)
 		}
@@ -466,6 +475,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case runtimepkg.EventTypeAssistantDelta:
 			if !m.streaming {
 				m.streaming = true
+				m.requesting = false
 			}
 			m.currentMD.WriteString(evt.Message)
 			m.lastType = evt.Type
@@ -483,6 +493,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refresh()
 			m.lastType = evt.Type
 			m.streaming = false
+			m.requesting = false
+			m.recalcLayout()
 		case runtimepkg.EventTypeStatus:
 			// Update/seed plan step status inline when possible.
 			if evt.Metadata != nil {
@@ -566,23 +578,30 @@ func (m model) View() string {
 		return "Initializing…"
 	}
 	top := m.border.Render(m.vp.View())
-	var inputBlock string
-	if m.streaming {
-		innerWidth := m.width - 2
-		if innerWidth < 1 {
-			innerWidth = 1
+	// Middle status bar between panels if active
+	var middle string
+	if m.requesting || m.streaming {
+		barWidth := m.width
+		if barWidth < 1 {
+			barWidth = 1
 		}
-		bar := m.renderGradientBar(innerWidth)
-		inputBlock = bar + "\n" + m.ta.View()
-	} else {
-		inputBlock = m.ta.View()
+		palette := "begin"
+		if m.streaming {
+			palette = "stream"
+		}
+		middle = m.renderGradientBar(barWidth, palette)
 	}
+	// Bottom input panel
+	inputBlock := m.ta.View()
 	bottom := m.border.Render(inputBlock)
+	if middle != "" {
+		return top + "\n" + middle + "\n" + bottom
+	}
 	return top + "\n" + bottom
 }
 
 // renderGradientBar renders a full-width, color-cycling bar for streaming state.
-func (m *model) renderGradientBar(width int) string {
+func (m *model) renderGradientBar(width int, palette string) string {
 	if width < 1 {
 		width = 1
 	}
@@ -590,15 +609,29 @@ func (m *model) renderGradientBar(width int) string {
 	b.Grow(width * 10)
 	// Animate hue offset with frame; wave lightness to get a subtle fade.
 	baseHue := float64((m.flashFrame * 5) % 360)
+	sat := 0.85
+	amp := 0.15
+	char := "█"
+	switch palette {
+	case "begin":
+		// Cooler, softer band while waiting for first token
+		sat = 0.65
+		amp = 0.10
+		char = "▄"
+	case "stream":
+		// Vibrant during streaming
+		sat = 0.90
+		amp = 0.18
+		char = "█"
+	}
 	for i := 0; i < width; i++ {
 		// Spread hues along the bar and offset over time.
 		hue := math.Mod(baseHue+float64(i*3), 360.0)
-		sat := 0.85
 		// Fade using a sine wave across the bar + time.
 		phase := (float64(i)/float64(width))*2*math.Pi + float64(m.flashFrame)/8.0
-		light := 0.50 + 0.15*math.Sin(phase)
+		light := 0.50 + amp*math.Sin(phase)
 		hex := hslToHex(hue, sat, light)
-		seg := lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render("█")
+		seg := lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render(char)
 		b.WriteString(seg)
 	}
 	return b.String()
