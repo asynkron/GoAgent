@@ -2,14 +2,12 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/joho/godotenv"
 
@@ -52,9 +50,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	reasoningEffort := flagSet.String("reasoning-effort", defaultReasoning, "Reasoning effort hint forwarded to OpenAI (low, medium, high)")
 	promptAugmentation := flagSet.String("augment", "", "additional system prompt instructions appended after the default prompt")
 	baseURL := flagSet.String("openai-base-url", defaultBaseURL, "override the OpenAI API base URL (optional)")
-	// Optional: submit a prompt immediately to see streaming deltas without extra wiring.
-	prompt := flagSet.String("prompt", "", "submit this prompt immediately and stream the assistant response")
-	useTUI := flagSet.Bool("tui", false, "run the interactive terminal UI (Bubble Tea)")
+	// Optional: submit a prompt immediately. In TUI mode this will be enqueued
+	// on startup.
+	prompt := flagSet.String("prompt", "", "submit this prompt immediately")
 
 	if err := flagSet.Parse(args); err != nil {
 		return 2
@@ -89,88 +87,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		UseStreaming:            true,
 	}
 
-	// If TUI mode requested, run the Bubble Tea UI and return.
-	if *useTUI {
-		return tuiui.Run(ctx, options)
-	}
-
-	agent, err := runtime.NewRuntime(options)
-	if err != nil {
-		fmt.Fprintf(stderr, "failed to create runtime: %v\n", err)
-		return 1
-	}
-
-	outputs := agent.Outputs()
-	var wg sync.WaitGroup
-	// Track whether we've printed streaming deltas so we can avoid duplicating
-	// content when the final assistant_message event arrives.
-	var printedDelta bool
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for evt := range outputs {
-			if evt.Type == runtime.EventTypeAssistantDelta {
-				// Streamed chunk: print as-is for a smooth, incremental experience.
-				// We intentionally avoid Glamour here because partial markdown often
-				// renders poorly; the final message can be rendered nicely if needed.
-				fmt.Fprint(stdout, evt.Message)
-				printedDelta = true
-				continue
-			}
-			if evt.Type == runtime.EventTypeAssistantMessage {
-				if printedDelta {
-					// Content already streamed; just end the line neatly.
-					fmt.Fprintln(stdout)
-					printedDelta = false
-					continue
-				}
-				// Print plain content (no markdown rendering dependency).
-				fmt.Fprintln(stdout, evt.Message)
-			} else {
-				level := string(evt.Level)
-				if level != "" {
-					fmt.Fprintf(stdout, "[%s:%s] %s\n", evt.Type, level, evt.Message)
-				} else {
-					fmt.Fprintf(stdout, "[%s] %s\n", evt.Type, evt.Message)
-				}
-			}
-
-			if len(evt.Metadata) == 0 {
-				continue
-			}
-
-			data, err := json.MarshalIndent(evt.Metadata, "", "  ")
-			if err != nil {
-				fmt.Fprintf(stdout, "  metadata: %+v\n", evt.Metadata)
-				continue
-			}
-
-			fmt.Fprintln(stdout, "  metadata:")
-			for _, line := range strings.Split(string(data), "\n") {
-				fmt.Fprintf(stdout, "    %s\n", line)
-			}
-		}
-	}()
-
-	// Run the runtime in the background so we can optionally submit a prompt immediately
-	// (similar to cmd/sse behavior where we call SubmitPrompt after starting Run).
-	runErrCh := make(chan error, 1)
-	go func() {
-		runErrCh <- agent.Run(ctx)
-	}()
-
-	// If a prompt is provided, submit it right away so deltas stream to stdout.
+	// TUI is the only UI. If a prompt is provided, set hands-free so the
+	// runtime will submit it immediately on startup.
 	if p := strings.TrimSpace(*prompt); p != "" {
-		agent.SubmitPrompt(p)
+		options.HandsFree = true
+		options.HandsFreeTopic = p
 	}
-
-	// Wait for the runtime to finish and handle any error.
-	if err := <-runErrCh; err != nil {
-		fmt.Fprintf(stderr, "runtime error: %v\n", err)
-		wg.Wait()
-		return 1
-	}
-
-	wg.Wait()
-	return 0
+	return tuiui.Run(ctx, options)
 }
