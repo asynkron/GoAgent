@@ -19,6 +19,19 @@ import (
 type eventMsg struct{ evt runtimepkg.RuntimeEvent }
 type errMsg struct{ err error }
 
+type transcriptKind int
+
+const (
+	itemPlain transcriptKind = iota
+	itemUser
+	itemAssistantMD
+)
+
+type transcriptItem struct {
+	kind transcriptKind
+	text string // raw content; assistant content is markdown
+}
+
 type model struct {
 	// Agent
 	agent   *runtimepkg.Runtime
@@ -31,7 +44,6 @@ type model struct {
 	width    int
 	height   int
 	ready    bool
-	buf      strings.Builder // transcript (ANSI)
 	lastType runtimepkg.EventType
 
 	// Streaming markdown rendering
@@ -44,6 +56,9 @@ type model struct {
 	// Styling
 	border    lipgloss.Style
 	userStyle lipgloss.Style
+
+	// Transcript items (dynamic rendering on resize)
+	items []transcriptItem
 }
 
 func newModel(agent *runtimepkg.Runtime, outputs <-chan runtimepkg.RuntimeEvent, cancel context.CancelFunc) *model {
@@ -64,16 +79,14 @@ func newModel(agent *runtimepkg.Runtime, outputs <-chan runtimepkg.RuntimeEvent,
 		ti:      ti,
 		border:  lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("240")),
 	}
-	// Initialize a renderer with a reasonable default; we'll rebuild on resize.
 	_ = m.rebuildRenderer(80)
-	// Initialize user block style; width set on first resize.
+	// Bright purple rounded border, transparent background, 1-char horizontal padding.
 	m.userStyle = lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("129")).
 		Foreground(lipgloss.Color("252")).
 		PaddingLeft(1).
-		PaddingRight(1).
-		PaddingTop(1).
-		PaddingBottom(1)
+		PaddingRight(1)
 	return &m
 }
 
@@ -87,28 +100,65 @@ func waitForEvent(ch <-chan runtimepkg.RuntimeEvent) tea.Cmd {
 	}
 }
 
-func (m *model) appendLine(s string) {
-	m.buf.WriteString(s)
-	// Include current streaming render (if any) so the transcript and the
-	// in-progress assistant message are visible together.
-	m.vp.SetContent(m.buf.String() + m.currentRendered)
+// renderTranscript renders all transcript items according to current width.
+func (m *model) renderTranscript() string {
+	var out strings.Builder
+	userWidth := m.vp.Width - 2 // account for user block border
+	if userWidth < 1 {
+		userWidth = 1
+	}
+	for _, it := range m.items {
+		switch it.kind {
+		case itemUser:
+			block := m.userStyle.Width(userWidth).Render(it.text)
+			out.WriteString(block)
+			if !strings.HasSuffix(block, "\n") {
+				out.WriteString("\n")
+			}
+		case itemAssistantMD:
+			if m.glam == nil {
+				out.WriteString(it.text)
+			} else if rendered, err := m.glam.Render(it.text); err == nil {
+				out.WriteString(rendered)
+			} else {
+				out.WriteString(it.text)
+			}
+			if !strings.HasSuffix(out.String(), "\n") {
+				out.WriteString("\n")
+			}
+		default:
+			out.WriteString(it.text)
+		}
+	}
+	return out.String()
+}
+
+// refresh recomposes the viewport content from transcript + any streaming.
+func (m *model) refresh() {
+	content := m.renderTranscript()
+	if m.currentRendered != "" {
+		content += m.currentRendered
+	}
+	m.vp.SetContent(content)
 	m.vp.GotoBottom()
 }
 
-// appendUserBlock renders the given text as a full-width block with
-// background and one space padding on left/right, then appends it to the
-// transcript and updates the viewport.
+func (m *model) appendLine(s string) {
+	m.items = append(m.items, transcriptItem{kind: itemPlain, text: s})
+	m.refresh()
+}
+
+// appendUserBlock appends a full-width user block to the transcript.
 func (m *model) appendUserBlock(text string) {
-	if !strings.HasSuffix(m.buf.String(), "\n") && m.buf.Len() > 0 {
-		m.buf.WriteString("\n")
+	// Ensure separation if previous plain text didn't end with newline.
+	if n := len(m.items); n > 0 {
+		last := m.items[n-1]
+		if last.kind == itemPlain && !strings.HasSuffix(last.text, "\n") {
+			m.items = append(m.items, transcriptItem{kind: itemPlain, text: "\n"})
+		}
 	}
-	block := m.userStyle.Render(text)
-	m.buf.WriteString(block)
-	if !strings.HasSuffix(m.buf.String(), "\n") {
-		m.buf.WriteString("\n")
-	}
-	m.vp.SetContent(m.buf.String() + m.currentRendered)
-	m.vp.GotoBottom()
+	m.items = append(m.items, transcriptItem{kind: itemUser, text: text})
+	m.refresh()
 }
 
 // rebuildRenderer recreates the Glamour renderer with the given wrap width.
@@ -117,9 +167,7 @@ func (m *model) rebuildRenderer(wrap int) error {
 		wrap = 10
 	}
 	r, err := glam.NewTermRenderer(
-		// Avoid auto background detection (which queries the terminal and can
-		// inject OSC responses into input). Use a fixed dark style.
-		glam.WithStylePath("dark"),
+		glam.WithStylePath("dark"), // fixed style to avoid OSC queries
 		glam.WithWordWrap(wrap),
 	)
 	if err != nil {
@@ -129,21 +177,16 @@ func (m *model) rebuildRenderer(wrap int) error {
 	return nil
 }
 
-// renderCurrent re-renders the current streaming markdown and updates the
-// viewport content by composing the transcript with the rendered fragment.
+// renderCurrent re-renders the current streaming markdown and updates the view.
 func (m *model) renderCurrent() {
 	if m.glam == nil {
 		m.currentRendered = m.currentMD.String()
+	} else if rendered, err := m.glam.Render(m.currentMD.String()); err == nil {
+		m.currentRendered = rendered
 	} else {
-		rendered, err := m.glam.Render(m.currentMD.String())
-		if err != nil {
-			m.currentRendered = m.currentMD.String()
-		} else {
-			m.currentRendered = rendered
-		}
+		m.currentRendered = m.currentMD.String()
 	}
-	m.vp.SetContent(m.buf.String() + m.currentRendered)
-	m.vp.GotoBottom()
+	m.refresh()
 	m.lastRender = time.Now()
 	m.pendingRender = false
 }
@@ -170,14 +213,10 @@ func (m *model) scheduleRender() tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
-	// Start listening to events immediately
 	return tea.Batch(waitForEvent(m.outputs), textinput.Blink)
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Always let sub-components process the message first so they keep
-	// internal state (cursor blink, input, etc.) consistent. We'll add our
-	// custom behavior after that when appropriate.
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
 	m.ti, cmd = m.ti.Update(msg)
@@ -189,32 +228,25 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// Layout: viewport above, textarea locked at bottom
 		m.ti.Width = m.width
-		// Reserve one line for the input + one for borders spacing
 		vpH := m.height - 3
 		if vpH < 3 {
 			vpH = 3
 		}
 		m.vp.Width = m.width
 		m.vp.Height = vpH
-		// Rebuild markdown renderer with the viewport width minus borders.
 		_ = m.rebuildRenderer(m.vp.Width - 2)
-		// Ensure the user block spans the full viewport width.
-		m.userStyle = m.userStyle.Width(m.vp.Width)
 		m.ready = true
+		m.refresh()
 		return m, nil
 
 	case tea.KeyMsg:
-		// Quit keys
 		if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc {
 			if m.cancel != nil {
 				m.cancel()
 			}
 			return m, tea.Quit
 		}
-
-		// Enter submits the single-line input and renders a full-width user block.
 		if msg.Type == tea.KeyEnter {
 			prompt := strings.TrimSpace(m.ti.Value())
 			if prompt != "" {
@@ -224,14 +256,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		}
-		// For all other key events we already updated components above.
 		return m, tea.Batch(cmds...)
 
 	case eventMsg:
 		evt := msg.evt
 		switch evt.Type {
 		case runtimepkg.EventTypeAssistantDelta:
-			// Accumulate deltas, throttle Glamour rendering.
 			m.currentMD.WriteString(evt.Message)
 			m.lastType = evt.Type
 			if cmd := m.scheduleRender(); cmd != nil {
@@ -239,21 +269,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(append(cmds, waitForEvent(m.outputs))...)
 		case runtimepkg.EventTypeAssistantMessage:
-			// Finalize: render once more and append to transcript.
-			m.renderCurrent()
-			// Ensure a separating newline between messages.
-			if !strings.HasSuffix(m.buf.String(), "\n") {
-				m.buf.WriteString("\n")
-			}
-			m.buf.WriteString(m.currentRendered)
-			if !strings.HasSuffix(m.buf.String(), "\n") {
-				m.buf.WriteString("\n")
-			}
-			// Clear streaming state and refresh viewport to transcript-only.
+			final := m.currentMD.String()
 			m.currentMD.Reset()
 			m.currentRendered = ""
-			m.vp.SetContent(m.buf.String())
-			m.vp.GotoBottom()
+			m.items = append(m.items, transcriptItem{kind: itemAssistantMD, text: final})
+			m.refresh()
 			m.lastType = evt.Type
 		case runtimepkg.EventTypeStatus:
 			line := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("[status] ") + evt.Message + "\n"
@@ -267,15 +287,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.appendLine(evt.Message + "\n")
 		}
-		// Keep listening
 		return m, tea.Batch(append(cmds, waitForEvent(m.outputs))...)
 
 	case errMsg:
-		// Outputs channel closed; keep UI around briefly
 		m.appendLine(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("[closed] ") + msg.err.Error() + "\n")
 		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tea.Quit })
 	case renderTick:
-		// Time to re-render the streaming markdown.
 		m.renderCurrent()
 		return m, tea.Batch(cmds...)
 	}
@@ -300,11 +317,8 @@ func Run(ctx context.Context, options runtimepkg.RuntimeOptions) int {
 		return 1
 	}
 
-	// Force streaming for the TUI and disable default output forwarding.
 	options.UseStreaming = true
 	options.DisableOutputForwarding = true
-	// Critical: prevent the runtime from reading stdin while Bubble Tea manages
-	// terminal input. Concurrent reads from stdin cause severe input lag.
 	options.DisableInputReader = true
 
 	agent, err := runtimepkg.NewRuntime(options)
