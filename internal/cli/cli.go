@@ -15,6 +15,7 @@ import (
 
 	"github.com/asynkron/goagent/internal/bootprobe"
 	"github.com/asynkron/goagent/internal/core/runtime"
+	tuiui "github.com/asynkron/goagent/internal/tui"
 )
 
 // Run executes the GoAgent runtime using the provided CLI arguments.
@@ -53,6 +54,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	baseURL := flagSet.String("openai-base-url", defaultBaseURL, "override the OpenAI API base URL (optional)")
 	// Optional: submit a prompt immediately to see streaming deltas without extra wiring.
 	prompt := flagSet.String("prompt", "", "submit this prompt immediately and stream the assistant response")
+	useTUI := flagSet.Bool("tui", false, "run the interactive terminal UI (Bubble Tea)")
 
 	if err := flagSet.Parse(args); err != nil {
 		return 2
@@ -85,6 +87,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		SystemPromptAugment:     combinedAugment,
 		DisableOutputForwarding: true,
 		UseStreaming:            true,
+	}
+
+	// If TUI mode requested, run the Bubble Tea UI and return.
+	if *useTUI {
+		return tuiui.Run(ctx, options)
 	}
 
 	agent, err := runtime.NewRuntime(options)
