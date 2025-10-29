@@ -4,6 +4,7 @@ go 1.25
 
 require (
 	github.com/joho/godotenv v1.5.1
+	github.com/sergi/go-diff v1.4.0
 	github.com/stretchr/testify v1.11.1
 	github.com/xeipuuv/gojsonschema v1.2.0
 )
