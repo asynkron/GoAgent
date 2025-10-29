@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -57,8 +58,9 @@ type model struct {
 	pendingRender   bool
 
 	// Activity
-	spin      spinner.Model
-	streaming bool
+	spin       spinner.Model
+	streaming  bool
+	flashFrame int
 
 	// Styling
 	border    lipgloss.Style
@@ -186,7 +188,12 @@ func (m *model) recalcLayout() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
-	m.ta.SetWidth(m.width)
+	// Set textarea width to fit inside the bordered container
+	inner := m.width - 2
+	if inner < 1 {
+		inner = 1
+	}
+	m.ta.SetWidth(inner)
 	// Inline plan: do not reserve rows; it's part of transcript content.
 	vpH := m.height - 3
 	if vpH < 3 {
@@ -423,6 +430,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, cmd)
 
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		if m.streaming {
+			m.flashFrame++
+		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -557,12 +568,82 @@ func (m model) View() string {
 	top := m.border.Render(m.vp.View())
 	var inputBlock string
 	if m.streaming {
-		inputBlock = m.spin.View() + " Streaming…\n" + m.ta.View()
+		innerWidth := m.width - 2
+		if innerWidth < 1 {
+			innerWidth = 1
+		}
+		bar := m.renderGradientBar(innerWidth)
+		inputBlock = bar + "\n" + m.ta.View()
 	} else {
 		inputBlock = m.ta.View()
 	}
 	bottom := m.border.Render(inputBlock)
 	return top + "\n" + bottom
+}
+
+// renderGradientBar renders a full-width, color-cycling bar for streaming state.
+func (m *model) renderGradientBar(width int) string {
+	if width < 1 {
+		width = 1
+	}
+	var b strings.Builder
+	b.Grow(width * 10)
+	// Animate hue offset with frame; wave lightness to get a subtle fade.
+	baseHue := float64((m.flashFrame * 5) % 360)
+	for i := 0; i < width; i++ {
+		// Spread hues along the bar and offset over time.
+		hue := math.Mod(baseHue+float64(i*3), 360.0)
+		sat := 0.85
+		// Fade using a sine wave across the bar + time.
+		phase := (float64(i)/float64(width))*2*math.Pi + float64(m.flashFrame)/8.0
+		light := 0.50 + 0.15*math.Sin(phase)
+		hex := hslToHex(hue, sat, light)
+		seg := lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render("█")
+		b.WriteString(seg)
+	}
+	return b.String()
+}
+
+// hslToHex converts H,S,L (H in [0,360), S/L in [0,1]) to a #RRGGBB string.
+func hslToHex(h, s, l float64) string {
+	r, g, b := hslToRGB(h, s, l)
+	return fmt.Sprintf("#%02X%02X%02X", r, g, b)
+}
+
+func hslToRGB(h, s, l float64) (uint8, uint8, uint8) {
+	c := (1 - math.Abs(2*l-1)) * s
+	hp := h / 60.0
+	x := c * (1 - math.Abs(math.Mod(hp, 2)-1))
+	var r1, g1, b1 float64
+	switch {
+	case 0 <= hp && hp < 1:
+		r1, g1, b1 = c, x, 0
+	case 1 <= hp && hp < 2:
+		r1, g1, b1 = x, c, 0
+	case 2 <= hp && hp < 3:
+		r1, g1, b1 = 0, c, x
+	case 3 <= hp && hp < 4:
+		r1, g1, b1 = 0, x, c
+	case 4 <= hp && hp < 5:
+		r1, g1, b1 = x, 0, c
+	default:
+		r1, g1, b1 = c, 0, x
+	}
+	m := l - c/2
+	r := uint8(clamp01((r1 + m)) * 255)
+	g := uint8(clamp01((g1 + m)) * 255)
+	b := uint8(clamp01((b1 + m)) * 255)
+	return r, g, b
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // Run launches the Bubble Tea TUI with the provided runtime options.
