@@ -267,7 +267,9 @@ func (r *Runtime) requestPlan(ctx context.Context) (*PlanResponse, ToolCall, err
 			// consolidated message when done.
 			var finalBuilder strings.Builder
 			streamFn := func(s string) {
-				if strings.TrimSpace(s) == "" {
+				// Do not trim whitespace: models can stream newlines or spaces
+				// as separate deltas for formatting. Only skip truly empty.
+				if s == "" {
 					return
 				}
 				finalBuilder.WriteString(s)
