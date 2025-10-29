@@ -259,6 +259,14 @@ You are not in a sandbox, you have full access to run any command.
 ## response format
 The assistant response should be using markdown format.
 
+## streaming behavior
+When producing the JSON for the required function tool call, always start by
+writing the "message" field first and stream it incrementally so hosts can
+render it live. Keep appending to the same message string as you think; do not
+wait to finalize the entire JSON before emitting the message. After the message
+is underway, you may populate the other fields (reasoning, plan, etc.). Ensure
+"message" is the first property in the JSON object.
+
 
 `
 
