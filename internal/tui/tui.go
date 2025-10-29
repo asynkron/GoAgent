@@ -7,11 +7,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	glam "github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	runtimepkg "github.com/asynkron/goagent/internal/core/runtime"
 )
@@ -41,7 +43,7 @@ type model struct {
 
 	// UI
 	vp       viewport.Model
-	ti       textinput.Model
+	ta       textarea.Model
 	width    int
 	height   int
 	ready    bool
@@ -53,6 +55,10 @@ type model struct {
 	currentRendered string          // last rendered ANSI of currentMD
 	lastRender      time.Time
 	pendingRender   bool
+
+	// Activity
+	spin      spinner.Model
+	streaming bool
 
 	// Styling
 	border    lipgloss.Style
@@ -72,11 +78,11 @@ type model struct {
 }
 
 func newModel(agent *runtimepkg.Runtime, outputs <-chan runtimepkg.RuntimeEvent, cancel context.CancelFunc) *model {
-	ti := textinput.New()
-	ti.Prompt = "> "
-	ti.Placeholder = "Type a prompt… (Enter to send)"
-	ti.CharLimit = 0
-	ti.Focus()
+	ta := textarea.New()
+	ta.Placeholder = "Type a prompt… (Enter to send)"
+	ta.CharLimit = 0
+	ta.SetHeight(3)
+	ta.Focus()
 
 	vp := viewport.Model{}
 	vp.YPosition = 0
@@ -86,9 +92,12 @@ func newModel(agent *runtimepkg.Runtime, outputs <-chan runtimepkg.RuntimeEvent,
 		outputs: outputs,
 		cancel:  cancel,
 		vp:      vp,
-		ti:      ti,
+		ta:      ta,
 		border:  lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("240")),
 	}
+	sp := spinner.New()
+	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("63"))
+	m.spin = sp
 	_ = m.rebuildRenderer(80)
 	// Bright purple rounded border, transparent background, 1-char horizontal padding.
 	m.userStyle = lipgloss.NewStyle().
@@ -177,7 +186,7 @@ func (m *model) recalcLayout() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
-	m.ti.Width = m.width
+	m.ta.SetWidth(m.width)
 	// Inline plan: do not reserve rows; it's part of transcript content.
 	vpH := m.height - 3
 	if vpH < 3 {
@@ -398,14 +407,18 @@ func (m *model) scheduleRender() tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(waitForEvent(m.outputs), textinput.Blink)
+	return tea.Batch(waitForEvent(m.outputs), textarea.Blink, m.spin.Tick)
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
-	m.ti, cmd = m.ti.Update(msg)
+	m.ta, cmd = m.ta.Update(msg)
 	cmds = append(cmds, cmd)
+	m.spin, cmd = m.spin.Update(msg)
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	m.vp, cmd = m.vp.Update(msg)
 	cmds = append(cmds, cmd)
 
@@ -426,11 +439,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		if msg.Type == tea.KeyEnter {
-			prompt := strings.TrimSpace(m.ti.Value())
+			prompt := strings.TrimSpace(m.ta.Value())
 			if prompt != "" {
 				m.agent.SubmitPrompt(prompt)
 				m.appendUserBlock(prompt)
-				m.ti.Reset()
+				m.ta.Reset()
 			}
 			return m, tea.Batch(cmds...)
 		}
@@ -440,6 +453,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		evt := msg.evt
 		switch evt.Type {
 		case runtimepkg.EventTypeAssistantDelta:
+			if !m.streaming {
+				m.streaming = true
+			}
 			m.currentMD.WriteString(evt.Message)
 			m.lastType = evt.Type
 			if cmd := m.scheduleRender(); cmd != nil {
@@ -455,6 +471,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.refresh()
 			m.lastType = evt.Type
+			m.streaming = false
 		case runtimepkg.EventTypeStatus:
 			// Update/seed plan step status inline when possible.
 			if evt.Metadata != nil {
@@ -538,7 +555,13 @@ func (m model) View() string {
 		return "Initializing…"
 	}
 	top := m.border.Render(m.vp.View())
-	bottom := m.border.Render(m.ti.View())
+	var inputBlock string
+	if m.streaming {
+		inputBlock = m.spin.View() + " Streaming…\n" + m.ta.View()
+	} else {
+		inputBlock = m.ta.View()
+	}
+	bottom := m.border.Render(inputBlock)
 	return top + "\n" + bottom
 }
 
@@ -553,6 +576,11 @@ func Run(ctx context.Context, options runtimepkg.RuntimeOptions) int {
 	options.UseStreaming = true
 	options.DisableOutputForwarding = true
 	options.DisableInputReader = true
+
+	// Prevent OSC background color queries from contaminating stdin by
+	// explicitly setting color profile and background for lipgloss/termenv.
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
 
 	agent, err := runtimepkg.NewRuntime(options)
 	if err != nil {
