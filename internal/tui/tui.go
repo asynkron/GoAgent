@@ -103,7 +103,11 @@ func waitForEvent(ch <-chan runtimepkg.RuntimeEvent) tea.Cmd {
 // renderTranscript renders all transcript items according to current width.
 func (m *model) renderTranscript() string {
 	var out strings.Builder
-	userWidth := m.vp.Width - 2 // account for user block border
+	// Compute inner content width for the user block so that the final
+	// rendered block (content + left/right padding + left/right border)
+	// exactly fits inside the viewport width.
+	// left/right padding = 2, left/right border = 2 -> subtract 4.
+	userWidth := m.vp.Width - 4
 	if userWidth < 1 {
 		userWidth = 1
 	}
