@@ -21,12 +21,12 @@ const planResponseSchemaJSON = `{
   "properties": {
     "message": {
       "type": "string",
-      "description": "Markdown formatted message to the user."
+      "description": "Must be valid GitHub-flavored Markdown. This is the only user-visible field. If including diagrams, they must be inside fenced mermaid code blocks (start with three backticks + mermaid, end with three backticks). Use fenced code blocks with language hints for code and commands. Do not include ANSI escape codes."
     },
     "reasoning": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "Supporting reasoning or commentary that can be used to explain the plan or message without being surfaced directly to the user.",
+      "description": "Supporting reasoning or commentary (not directly shown to the user). Keep as plain text strings; do not include Markdown or code fences.",
       "default": []
     },
     "plan": {
@@ -75,8 +75,8 @@ const planResponseSchemaJSON = `{
               "reason": {
                 "type": "string",
                 "default": "",
-                "description": "Explain why this shell command is required for the plan step. If only shell or run is provided, justify the omission."
-              },
+            "description": "Explain why this shell command is required for the plan step. This text is not user-facing; keep it plain and concise."
+          },
               "shell": {
                 "type": "string",
                 "description": "Shell executable to launch when running commands. May only contain value if \"run\" contains an actual command to run."
