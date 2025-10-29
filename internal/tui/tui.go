@@ -25,6 +25,7 @@ const (
 	itemPlain transcriptKind = iota
 	itemUser
 	itemAssistantMD
+	itemPlan
 )
 
 type transcriptItem struct {
@@ -56,6 +57,7 @@ type model struct {
 	// Styling
 	border    lipgloss.Style
 	userStyle lipgloss.Style
+	planStyle lipgloss.Style
 
 	// Transcript items (dynamic rendering on resize)
 	items []transcriptItem
@@ -64,6 +66,9 @@ type model struct {
 	planSteps []runtimepkg.PlanStep
 	planIndex map[string]int
 	executing map[string]bool
+
+	// Inline plan snapshot anchoring
+	planSnapshotIndex int
 }
 
 func newModel(agent *runtimepkg.Runtime, outputs <-chan runtimepkg.RuntimeEvent, cancel context.CancelFunc) *model {
@@ -92,6 +97,14 @@ func newModel(agent *runtimepkg.Runtime, outputs <-chan runtimepkg.RuntimeEvent,
 		Foreground(lipgloss.Color("252")).
 		PaddingLeft(1).
 		PaddingRight(1)
+	// Plan panel style (panel block similar to user input), purple rounded border
+	m.planStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("129")).
+		Foreground(lipgloss.Color("252")).
+		PaddingLeft(1).
+		PaddingRight(1)
+	m.planSnapshotIndex = -1
 	return &m
 }
 
@@ -118,6 +131,12 @@ func (m *model) renderTranscript() string {
 	}
 	for _, it := range m.items {
 		switch it.kind {
+		case itemPlan:
+			// Render stored snapshot text (keeps historical integrity)
+			out.WriteString(it.text)
+			if !strings.HasSuffix(it.text, "\n") {
+				out.WriteString("\n")
+			}
 		case itemUser:
 			block := m.userStyle.Width(userWidth).Render(it.text)
 			out.WriteString(block)
@@ -159,15 +178,8 @@ func (m *model) recalcLayout() {
 		return
 	}
 	m.ti.Width = m.width
-	plan := m.renderPlan()
-	planLines := 0
-	if strings.TrimSpace(plan) != "" {
-		planLines = strings.Count(plan, "\n")
-		if !strings.HasSuffix(plan, "\n") {
-			planLines += 1
-		}
-	}
-	vpH := m.height - 3 - planLines
+	// Inline plan: do not reserve rows; it's part of transcript content.
+	vpH := m.height - 3
 	if vpH < 3 {
 		vpH = 3
 	}
@@ -199,10 +211,10 @@ func (m *model) renderPlan() string {
 	if len(m.planSteps) == 0 {
 		return ""
 	}
-	var b strings.Builder
+	var inner strings.Builder
 	// Header
-	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")).Render("Plan:"))
-	b.WriteString("\n")
+	inner.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")).Render("Plan:"))
+	inner.WriteString("\n")
 	// Lines
 	for _, step := range m.planSteps {
 		id := step.ID
@@ -234,11 +246,18 @@ func (m *model) renderPlan() string {
 		}
 		line := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(box)
 		titleStyled := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(" " + title)
-		b.WriteString(line)
-		b.WriteString(titleStyled)
-		b.WriteString("\n")
+		inner.WriteString(line)
+		inner.WriteString(titleStyled)
+		inner.WriteString("\n")
 	}
-	return b.String()
+	// Render as a bordered panel. Set the width so the final block (including
+	// inner border and left/right padding) fits inside the viewport content.
+	// Subtract 4 = 2 for padding (1+1) + 2 for the panel's own border.
+	panelWidth := m.vp.Width - 4
+	if panelWidth < 1 {
+		panelWidth = 1
+	}
+	return m.planStyle.Width(panelWidth).Render(inner.String())
 }
 
 // setPlan loads the plan steps and builds a fast index.
@@ -256,6 +275,10 @@ func (m *model) setPlan(steps []runtimepkg.PlanStep) {
 			delete(m.executing, k)
 		}
 	}
+	// Anchor a new inline plan snapshot in the transcript and track its index.
+	snapshot := m.renderPlan()
+	m.items = append(m.items, transcriptItem{kind: itemPlan, text: snapshot})
+	m.planSnapshotIndex = len(m.items) - 1
 	m.recalcLayout()
 }
 
@@ -289,6 +312,11 @@ func (m *model) updateStepStatus(stepID string, status any) {
 			// pending/waiting
 		}
 	}
+	// Update the inline plan snapshot in place so the anchored panel reflects
+	// the latest statuses for this pass.
+	if m.planSnapshotIndex >= 0 && m.planSnapshotIndex < len(m.items) {
+		m.items[m.planSnapshotIndex].text = m.renderPlan()
+	}
 	m.recalcLayout()
 }
 
@@ -307,6 +335,14 @@ func (m *model) ensureStep(stepID, title string) {
 	s := runtimepkg.PlanStep{ID: stepID, Title: title, Status: runtimepkg.PlanPending}
 	m.planSteps = append(m.planSteps, s)
 	m.planIndex[stepID] = len(m.planSteps) - 1
+	if m.planSnapshotIndex >= 0 && m.planSnapshotIndex < len(m.items) {
+		m.items[m.planSnapshotIndex].text = m.renderPlan()
+	} else {
+		// Create a snapshot if none exists yet for this pass
+		snapshot := m.renderPlan()
+		m.items = append(m.items, transcriptItem{kind: itemPlan, text: snapshot})
+		m.planSnapshotIndex = len(m.items) - 1
+	}
 	m.recalcLayout()
 }
 
@@ -411,42 +447,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(append(cmds, waitForEvent(m.outputs))...)
 		case runtimepkg.EventTypeAssistantMessage:
-			// Try to load plan if present in metadata.
-			if evt.Metadata != nil {
-				if rawPlan, ok := evt.Metadata["plan"]; ok {
-					switch p := rawPlan.(type) {
-					case []runtimepkg.PlanStep:
-						m.setPlan(p)
-					case []any:
-						steps := make([]runtimepkg.PlanStep, 0, len(p))
-						for _, it := range p {
-							if m1, ok := it.(map[string]any); ok {
-								var s runtimepkg.PlanStep
-								if id, ok := m1["id"].(string); ok {
-									s.ID = id
-								}
-								if title, ok := m1["title"].(string); ok {
-									s.Title = title
-								}
-								if status, ok := m1["status"].(string); ok {
-									s.Status = runtimepkg.PlanStatus(status)
-								}
-								if deps, ok := m1["waitingForId"].([]any); ok {
-									for _, d := range deps {
-										if ds, ok := d.(string); ok {
-											s.WaitingForID = append(s.WaitingForID, ds)
-										}
-									}
-								}
-								steps = append(steps, s)
-							}
-						}
-						if len(steps) > 0 {
-							m.setPlan(steps)
-						}
-					}
-				}
-			}
 			final := m.currentMD.String()
 			m.currentMD.Reset()
 			m.currentRendered = ""
@@ -464,7 +464,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					case []runtimepkg.PlanStep:
 						m.setPlan(p)
 						m.refresh()
-						break
+						return m, tea.Batch(append(cmds, waitForEvent(m.outputs))...)
 					case []any:
 						steps := make([]runtimepkg.PlanStep, 0, len(p))
 						for _, it := range p {
@@ -492,7 +492,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if len(steps) > 0 {
 							m.setPlan(steps)
 							m.refresh()
-							break
+							return m, tea.Batch(append(cmds, waitForEvent(m.outputs))...)
 						}
 					}
 				}
@@ -505,7 +505,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.updateStepStatus(stepID, "executing")
 					}
 					m.refresh()
-					break
+					return m, tea.Batch(append(cmds, waitForEvent(m.outputs))...)
 				}
 			}
 			// Fallback: append status line
@@ -537,19 +537,7 @@ func (m model) View() string {
 	if !m.ready {
 		return "Initializing…"
 	}
-	// Always show the plan panel (if any) above the scrollable log viewport
-	// so it stays visible even when the viewport is scrolled to bottom.
-	plan := m.renderPlan()
-	var topContent strings.Builder
-	if strings.TrimSpace(plan) != "" {
-		topContent.WriteString(plan)
-		if !strings.HasSuffix(plan, "\n") {
-			topContent.WriteString("\n")
-		}
-	}
-	topContent.WriteString(m.vp.View())
-
-	top := m.border.Render(topContent.String())
+	top := m.border.Render(m.vp.View())
 	bottom := m.border.Render(m.ti.View())
 	return top + "\n" + bottom
 }
