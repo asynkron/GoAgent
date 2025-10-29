@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -60,7 +61,8 @@ type model struct {
 	// Activity
 	spin       spinner.Model
 	requesting bool // after submit, before first delta
-	streaming  bool // after first delta, until final message
+	streaming  bool // while streaming deltas
+	busy       bool // overall busy: requesting/streaming/working between turns
 	flashFrame int
 
 	// Styling
@@ -86,9 +88,20 @@ func newModel(agent *runtimepkg.Runtime, outputs <-chan runtimepkg.RuntimeEvent,
 	ta.CharLimit = 0
 	ta.SetHeight(3)
 	ta.Focus()
+	// Override default InsertNewline mapping so Enter does not insert a newline.
+	// We’ll use Ctrl+J (LF) and Alt+Enter to insert newlines instead.
+	km := ta.KeyMap
+	km.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j"))
+	ta.KeyMap = km
 
 	vp := viewport.Model{}
 	vp.YPosition = 0
+	// Disable default viewport half page scrolling on 'u' and 'd'
+	// to avoid conflicts while typing in the textarea.
+	vkm := viewport.DefaultKeyMap()
+	vkm.HalfPageUp = key.NewBinding()   // unbind 'u'
+	vkm.HalfPageDown = key.NewBinding() // unbind 'd'
+	vp.KeyMap = vkm
 
 	m := model{
 		agent:   agent,
@@ -197,7 +210,7 @@ func (m *model) recalcLayout() {
 	m.ta.SetWidth(inner)
 	// Inline plan: do not reserve rows; it's part of transcript content.
 	reserve := 3 // bottom input panel (border + content)
-	if m.requesting || m.streaming {
+	if m.requesting || m.streaming || m.busy {
 		reserve += 1 // gradient bar between panels
 	}
 	vpH := m.height - reserve
@@ -431,15 +444,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cmd != nil {
 		cmds = append(cmds, cmd)
 	}
-	m.vp, cmd = m.vp.Update(msg)
-	cmds = append(cmds, cmd)
 
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		if m.requesting || m.streaming {
+		// Forward non-key events to the viewport so it can update animations/state.
+		m.vp, cmd = m.vp.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.requesting || m.streaming || m.busy {
 			m.flashFrame++
 		}
 	case tea.WindowSizeMsg:
+		m.vp, cmd = m.vp.Update(msg)
+		cmds = append(cmds, cmd)
 		m.width = msg.Width
 		m.height = msg.Height
 		m.recalcLayout()
@@ -448,11 +464,25 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Do NOT pass raw key events to the viewport; this prevents the
+		// viewport from capturing 'u' and 'd' for half-page scroll while
+		// the textarea is focused and the user is typing.
 		if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc {
 			if m.cancel != nil {
 				m.cancel()
 			}
 			return m, tea.Quit
+		}
+		// Insert newline on Ctrl+J (LF) to emulate Shift+Enter behavior, which
+		// most terminals cannot reliably detect.
+		if msg.Type == tea.KeyCtrlJ {
+			m.ta.InsertString("\n")
+			return m, tea.Batch(cmds...)
+		}
+		// Insert newline on Alt+Enter for terminals that send Alt modifier.
+		if msg.Type == tea.KeyEnter && msg.Alt {
+			m.ta.InsertString("\n")
+			return m, tea.Batch(cmds...)
 		}
 		if msg.Type == tea.KeyEnter {
 			prompt := strings.TrimSpace(m.ta.Value())
@@ -462,6 +492,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ta.Reset()
 				m.requesting = true
 				m.streaming = false
+				m.busy = true
 				m.flashFrame = 0
 				m.recalcLayout()
 			}
@@ -470,6 +501,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case eventMsg:
+		m.vp, cmd = m.vp.Update(msg)
+		cmds = append(cmds, cmd)
 		evt := msg.evt
 		switch evt.Type {
 		case runtimepkg.EventTypeAssistantDelta:
@@ -477,6 +510,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.streaming = true
 				m.requesting = false
 			}
+			m.busy = true
 			m.currentMD.WriteString(evt.Message)
 			m.lastType = evt.Type
 			if cmd := m.scheduleRender(); cmd != nil {
@@ -494,6 +528,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastType = evt.Type
 			m.streaming = false
 			m.requesting = false
+			// Stay busy after final message until explicit input request arrives.
+			m.busy = true
 			m.recalcLayout()
 		case runtimepkg.EventTypeStatus:
 			// Update/seed plan step status inline when possible.
@@ -557,15 +593,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case runtimepkg.EventTypeRequestInput:
 			line := lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render("[input] ") + evt.Message + "\n"
 			m.appendLine(line)
+			// Ready for user input: clear busy states and stop the bar.
+			m.busy = false
+			m.requesting = false
+			m.streaming = false
+			m.recalcLayout()
 		default:
 			m.appendLine(evt.Message + "\n")
 		}
 		return m, tea.Batch(append(cmds, waitForEvent(m.outputs))...)
 
 	case errMsg:
+		m.vp, cmd = m.vp.Update(msg)
+		cmds = append(cmds, cmd)
 		m.appendLine(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("[closed] ") + msg.err.Error() + "\n")
 		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tea.Quit })
 	case renderTick:
+		m.vp, cmd = m.vp.Update(msg)
+		cmds = append(cmds, cmd)
 		m.renderCurrent()
 		return m, tea.Batch(cmds...)
 	}
@@ -580,7 +625,7 @@ func (m model) View() string {
 	top := m.border.Render(m.vp.View())
 	// Middle status bar between panels if active
 	var middle string
-	if m.requesting || m.streaming {
+	if m.requesting || m.streaming || m.busy {
 		barWidth := m.width
 		if barWidth < 1 {
 			barWidth = 1
@@ -588,6 +633,8 @@ func (m model) View() string {
 		palette := "begin"
 		if m.streaming {
 			palette = "stream"
+		} else if m.busy {
+			palette = "work"
 		}
 		middle = m.renderGradientBar(barWidth, palette)
 	}
@@ -623,6 +670,11 @@ func (m *model) renderGradientBar(width int, palette string) string {
 		sat = 0.90
 		amp = 0.18
 		char = "█"
+	case "work":
+		// In-between turns while tools/plan execute; steady, warmer tones
+		sat = 0.75
+		amp = 0.08
+		char = "▓"
 	}
 	for i := 0; i < width; i++ {
 		// Spread hues along the bar and offset over time.
