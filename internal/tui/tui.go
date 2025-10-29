@@ -42,7 +42,8 @@ type model struct {
 	pendingRender   bool
 
 	// Styling
-	border lipgloss.Style
+	border    lipgloss.Style
+	userStyle lipgloss.Style
 }
 
 func newModel(agent *runtimepkg.Runtime, outputs <-chan runtimepkg.RuntimeEvent, cancel context.CancelFunc) *model {
@@ -65,6 +66,14 @@ func newModel(agent *runtimepkg.Runtime, outputs <-chan runtimepkg.RuntimeEvent,
 	}
 	// Initialize a renderer with a reasonable default; we'll rebuild on resize.
 	_ = m.rebuildRenderer(80)
+	// Initialize user block style; width set on first resize.
+	m.userStyle = lipgloss.NewStyle().
+		Background(lipgloss.Color("236")).
+		Foreground(lipgloss.Color("252")).
+		PaddingLeft(1).
+		PaddingRight(1).
+		PaddingTop(1).
+		PaddingBottom(1)
 	return &m
 }
 
@@ -82,6 +91,22 @@ func (m *model) appendLine(s string) {
 	m.buf.WriteString(s)
 	// Include current streaming render (if any) so the transcript and the
 	// in-progress assistant message are visible together.
+	m.vp.SetContent(m.buf.String() + m.currentRendered)
+	m.vp.GotoBottom()
+}
+
+// appendUserBlock renders the given text as a full-width block with
+// background and one space padding on left/right, then appends it to the
+// transcript and updates the viewport.
+func (m *model) appendUserBlock(text string) {
+	if !strings.HasSuffix(m.buf.String(), "\n") && m.buf.Len() > 0 {
+		m.buf.WriteString("\n")
+	}
+	block := m.userStyle.Render(text)
+	m.buf.WriteString(block)
+	if !strings.HasSuffix(m.buf.String(), "\n") {
+		m.buf.WriteString("\n")
+	}
 	m.vp.SetContent(m.buf.String() + m.currentRendered)
 	m.vp.GotoBottom()
 }
@@ -175,6 +200,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vp.Height = vpH
 		// Rebuild markdown renderer with the viewport width minus borders.
 		_ = m.rebuildRenderer(m.vp.Width - 2)
+		// Ensure the user block spans the full viewport width.
+		m.userStyle = m.userStyle.Width(m.vp.Width)
 		m.ready = true
 		return m, nil
 
@@ -187,13 +214,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-		// Enter submits the single-line input.
+		// Enter submits the single-line input and renders a full-width user block.
 		if msg.Type == tea.KeyEnter {
 			prompt := strings.TrimSpace(m.ti.Value())
 			if prompt != "" {
 				m.agent.SubmitPrompt(prompt)
-				userLine := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("You: ") + prompt + "\n"
-				m.appendLine(userLine)
+				m.appendUserBlock(prompt)
 				m.ti.Reset()
 			}
 			return m, tea.Batch(cmds...)
