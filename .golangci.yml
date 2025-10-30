@@ -1,4 +1,4 @@
-version: 2
+version: "2"
 
 run:
   timeout: 5m
@@ -28,10 +28,7 @@ linters-settings:
       - name: imports-blacklist
       - name: indent-error-flow
       - name: range
-  gofumpt:
-    extra-rules: true
 
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
