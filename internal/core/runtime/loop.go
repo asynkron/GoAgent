@@ -399,6 +399,13 @@ func (r *Runtime) forwardOutputs(ctx context.Context) {
 
 func (r *Runtime) emitRequestInput(message string) {
 	if r.options.HandsFree {
+		// In hands-free mode, optionally auto-respond with a configured
+		// message to keep execution going without human intervention.
+		reply := strings.TrimSpace(r.options.HandsFreeAutoReply)
+		if reply != "" {
+			// Enqueue a synthetic user prompt to continue the session.
+			r.enqueue(InputEvent{Type: InputTypePrompt, Prompt: reply})
+		}
 		return
 	}
 	r.emit(RuntimeEvent{

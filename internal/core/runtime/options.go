@@ -20,7 +20,12 @@ type RuntimeOptions struct {
 	AmnesiaAfterPasses  int
 	HandsFree           bool
 	HandsFreeTopic      string
-	MaxPasses           int
+	// HandsFreeAutoReply holds a message that will be automatically
+	// submitted as a user prompt whenever the runtime requests human input
+	// while running in hands-free mode. When empty, no auto-reply is sent
+	// and input requests are effectively ignored as before.
+	HandsFreeAutoReply string
+	MaxPasses          int
 	// HistoryLogPath controls where the runtime persists the serialized
 	// conversation history. A nil pointer defaults to "history.json" to
 	// preserve the previous behaviour while allowing callers to override

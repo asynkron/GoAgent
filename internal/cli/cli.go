@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -53,6 +54,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// Optional: submit a prompt immediately. In TUI mode this will be enqueued
 	// on startup.
 	prompt := flagSet.String("prompt", "", "submit this prompt immediately")
+	// Research hands-free mode: pass a JSON object {"goal":"...","turns":N}
+	research := flagSet.String("research", "", "hands-free mode: JSON {\"goal\":\"...\", \"turns\":N}")
 
 	if err := flagSet.Parse(args); err != nil {
 		return 2
@@ -87,9 +90,35 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		UseStreaming:            true,
 	}
 
-	// TUI is the only UI. If a prompt is provided, set hands-free so the
-	// runtime will submit it immediately on startup.
-	if p := strings.TrimSpace(*prompt); p != "" {
+	// Research mode takes precedence over --prompt.
+	if spec := strings.TrimSpace(*research); spec != "" {
+		// Accept a compact JSON like {"goal":"...","turns":20}
+		type researchSpec struct {
+			Goal  string `json:"goal"`
+			Turns int    `json:"turns"`
+		}
+		var rs researchSpec
+		if err := json.Unmarshal([]byte(spec), &rs); err != nil {
+			fmt.Fprintf(stderr, "invalid --research JSON: %v\n", err)
+			return 2
+		}
+		rs.Goal = strings.TrimSpace(rs.Goal)
+		if rs.Goal == "" {
+			fmt.Fprintln(stderr, "--research requires non-empty goal")
+			return 2
+		}
+		if rs.Turns < 0 {
+			rs.Turns = 0
+		}
+		options.HandsFree = true
+		options.HandsFreeTopic = rs.Goal
+		if rs.Turns > 0 {
+			options.MaxPasses = rs.Turns
+		}
+		options.HandsFreeAutoReply = fmt.Sprintf("Please continue to work on the set goal. No human available. Goal: %s", rs.Goal)
+	} else if p := strings.TrimSpace(*prompt); p != "" {
+		// TUI is the only UI. If a prompt is provided, set hands-free so the
+		// runtime will submit it immediately on startup.
 		options.HandsFree = true
 		options.HandsFreeTopic = p
 	}

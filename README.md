@@ -49,6 +49,20 @@ Optional environment variables:
 - `OPENAI_BASE_URL` (custom API base, optional)
 - `OPENAI_REASONING_EFFORT` (`low`, `medium`, `high`)
 
+Hands-free research mode
+
+You can run the agent in a hands-free loop with an overarching goal and a fixed number of turns. The agent will auto‑reply when it requests human input so it continues working toward the goal:
+
+```
+OPENAI_API_KEY=sk-... go run ./cmd --research '{"goal":"try to find any race-condition bugs in this codebase","turns":20}'
+```
+
+This sets the initial goal prompt, caps execution at 20 passes, and auto‑responds to any input requests with a message like:
+
+```
+Please continue to work on the set goal. No human available. Goal: try to find any race-condition bugs in this codebase
+```
+
 If you prefer an HTTP/SSE example, run:
 
 ```
