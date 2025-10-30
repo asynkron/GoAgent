@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -37,6 +38,12 @@ type transcriptItem struct {
 	text string // raw content; assistant content is markdown
 }
 
+// markdownRenderer is a minimal interface for rendering Markdown into ANSI.
+// When nil, rendering falls back to returning the raw string.
+type markdownRenderer interface {
+	Render(s string) (string, error)
+}
+
 type model struct {
 	// Agent
 	agent   *runtimepkg.Runtime
@@ -52,7 +59,7 @@ type model struct {
 	lastType runtimepkg.EventType
 
 	// Streaming markdown rendering
-	glam            *glam.TermRenderer
+	glam            markdownRenderer
 	currentMD       strings.Builder // accumulating assistant deltas
 	currentRendered string          // last rendered ANSI of currentMD
 	lastRender      time.Time
@@ -192,8 +199,42 @@ func (m *model) refresh() {
 	if m.currentRendered != "" {
 		content += m.currentRendered
 	}
+	// Anchor content to the bottom of the viewport: if there are fewer
+	// visual lines than the viewport height, prepend newlines so that
+	// the content starts from the bottom edge.
+	if m.vp.Height > 0 {
+		lines := countRenderedLines(content)
+		if lines < m.vp.Height {
+			padding := strings.Repeat("\n", m.vp.Height-lines)
+			content = padding + content
+		}
+	}
 	m.vp.SetContent(content)
 	m.vp.GotoBottom()
+}
+
+// countRenderedLines returns the number of visual lines for the given content.
+// It strips ANSI escape sequences before counting newlines.
+func countRenderedLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	// Remove ANSI sequences to avoid counting OSC/CSI artifacts as text.
+	plain := stripANSI(s)
+	// Count '\n' occurrences; add 1 for the last line when content does not end with '\n'.
+	n := strings.Count(plain, "\n")
+	// If the content ends with a newline, there is no trailing partial line.
+	if strings.HasSuffix(plain, "\n") {
+		return n
+	}
+	return n + 1
+}
+
+// stripANSI removes common ANSI escape sequences.
+var ansiRegexp = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
+
+func stripANSI(s string) string {
+	return ansiRegexp.ReplaceAllString(s, "")
 }
 
 // recalcLayout recomputes viewport sizes based on current terminal size and
@@ -209,15 +250,19 @@ func (m *model) recalcLayout() {
 	}
 	m.ta.SetWidth(inner)
 	// Inline plan: do not reserve rows; it's part of transcript content.
-	reserve := 3 // bottom input panel (border + content)
-	if m.requesting || m.streaming || m.busy {
-		reserve += 1 // gradient bar between panels
-	}
+	// Always reserve one row for the middle progress/color bar to avoid
+	// layout shifts when it appears/disappears.
+	reserve := 4 // bottom input panel (border + content) + dedicated middle bar row
 	vpH := m.height - reserve
 	if vpH < 3 {
 		vpH = 3
 	}
-	m.vp.Width = m.width
+	// Set viewport width to the inner content width (account for 1-col left and right border)
+	innerVP := m.width - 2
+	if innerVP < 1 {
+		innerVP = 1
+	}
+	m.vp.Width = innerVP
 	m.vp.Height = vpH
 	_ = m.rebuildRenderer(m.vp.Width - 2)
 }
@@ -390,6 +435,7 @@ func (m *model) rebuildRenderer(wrap int) error {
 		glam.WithWordWrap(wrap),
 	)
 	if err != nil {
+		// Leave m.glam as nil to fall back to raw text
 		return err
 	}
 	m.glam = r
@@ -623,28 +669,29 @@ func (m model) View() string {
 		return "Initializing…"
 	}
 	top := m.border.Render(m.vp.View())
-	// Middle status bar between panels if active
+	// Middle status bar: always render a dedicated row (as spaces when inactive)
+	barWidth := m.width
+	if barWidth < 1 {
+		barWidth = 1
+	}
+	palette := "none"
+	if m.streaming {
+		palette = "stream"
+	} else if m.busy {
+		palette = "work"
+	} else if m.requesting {
+		palette = "begin"
+	}
 	var middle string
-	if m.requesting || m.streaming || m.busy {
-		barWidth := m.width
-		if barWidth < 1 {
-			barWidth = 1
-		}
-		palette := "begin"
-		if m.streaming {
-			palette = "stream"
-		} else if m.busy {
-			palette = "work"
-		}
+	if palette == "none" {
+		middle = strings.Repeat(" ", barWidth)
+	} else {
 		middle = m.renderGradientBar(barWidth, palette)
 	}
 	// Bottom input panel
 	inputBlock := m.ta.View()
 	bottom := m.border.Render(inputBlock)
-	if middle != "" {
-		return top + "\n" + middle + "\n" + bottom
-	}
-	return top + "\n" + bottom
+	return top + "\n" + middle + "\n" + bottom
 }
 
 // renderGradientBar renders a full-width, color-cycling bar for streaming state.
