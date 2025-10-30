@@ -1,3 +1,4 @@
+// Package main bootstraps the GoAgent CLI entrypoint.
 package main
 
 import (

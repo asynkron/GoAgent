@@ -1,3 +1,4 @@
+// Package bootprobe detects host/project capabilities to augment the system prompt.
 package bootprobe
 
 // BuildAugmentation runs the boot probe suite for the provided context and

@@ -245,9 +245,7 @@ func normalizeLine(line string) string {
 
 func enhanceHunkError(err error, state *state, hunk Hunk, number int) *Error {
 	var pe *Error
-	if errors.As(err, &pe) {
-		// Use existing instance to preserve metadata.
-	} else {
+	if !errors.As(err, &pe) {
 		pe = &Error{Message: err.Error()}
 	}
 

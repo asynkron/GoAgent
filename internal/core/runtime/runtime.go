@@ -16,7 +16,6 @@ type Runtime struct {
 	inputs  chan InputEvent
 	outputs chan RuntimeEvent
 
-	once      sync.Once
 	closeOnce sync.Once
 	closed    chan struct{}
 

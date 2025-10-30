@@ -1,3 +1,4 @@
+// Package tui renders a terminal UI for interacting with the GoAgent runtime.
 package tui
 
 import (
@@ -516,8 +517,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flashFrame++
 		}
 	case tea.WindowSizeMsg:
-		m.vp, cmd = m.vp.Update(msg)
-		cmds = append(cmds, cmd)
+		m.vp, _ = m.vp.Update(msg)
 		m.width = msg.Width
 		m.height = msg.Height
 		m.recalcLayout()
@@ -676,8 +676,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(append(cmds, waitForEvent(m.outputs))...)
 
 	case errMsg:
-		m.vp, cmd = m.vp.Update(msg)
-		cmds = append(cmds, cmd)
+		m.vp, _ = m.vp.Update(msg)
 		m.appendLine(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("[closed] ") + msg.err.Error() + "\n")
 		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tea.Quit })
 	case renderTick:

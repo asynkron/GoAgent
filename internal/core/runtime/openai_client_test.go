@@ -21,7 +21,7 @@ func TestRequestPlanUsesFunctionToolShape(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Record the host so the test can assert that the custom base URL is respected.
 		requestHost = r.Host
-		defer r.Body.Close()
+		defer func() { _ = r.Body.Close() }()
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("failed to decode request: %v", err)
 		}

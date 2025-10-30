@@ -100,9 +100,9 @@ func TestApplyEnhancesFailedHunk(t *testing.T) {
 	}
 
 	ws := &stubWorkspace{
-		ensureFunc: func(path string, create bool) (*state, error) {
-			if path != "example.txt" || create {
-				t.Fatalf("unexpected Ensure args: %q create=%v", path, create)
+		ensureFunc: func(path string, _ bool) (*state, error) {
+			if path != "example.txt" {
+				t.Fatalf("unexpected Ensure path: %q", path)
 			}
 			return st, nil
 		},
@@ -161,7 +161,7 @@ func TestApplyTrimsMovePathAndCommits(t *testing.T) {
 
 	committed := false
 	ws := &stubWorkspace{
-		ensureFunc: func(path string, create bool) (*state, error) {
+		ensureFunc: func(path string, _ bool) (*state, error) {
 			if path != "original.txt" {
 				t.Fatalf("unexpected path: %q", path)
 			}

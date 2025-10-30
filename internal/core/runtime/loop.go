@@ -309,7 +309,7 @@ func (r *Runtime) requestPlan(ctx context.Context) (*PlanResponse, ToolCall, err
 			continue
 		}
 
-		retryCount = 0
+		// reset unnecessary before return
 
 		r.emit(RuntimeEvent{
 			Type:    EventTypeStatus,

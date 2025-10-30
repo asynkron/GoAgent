@@ -99,7 +99,7 @@ type OSResult struct {
 	Distribution string
 }
 
-// ShellResult summarises the user's shells.
+// ShellProbeResult summarises the user's shells.
 // Default: the login shell configured for the account (e.g. zsh).
 // Current: the parent process shell of the CLI invocation (e.g. zsh, bash, fish).
 // Source: how Default was determined (dscl, getent, passwd, env).

@@ -1,3 +1,4 @@
+// Package main runs a minimal HTTP SSE server that streams agent output.
 package main
 
 import (

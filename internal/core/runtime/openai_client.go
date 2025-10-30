@@ -150,7 +150,7 @@ func (c *OpenAIClient) RequestPlanStreamingResponses(ctx context.Context, histor
 	if err != nil {
 		return ToolCall{}, fmt.Errorf("openai(responses): do request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -599,9 +599,8 @@ func extractPartialJSONStringArrayField(buf, field string) (values []string, com
 						if j+6 <= len(buf) {
 							j += 6
 							continue
-						} else {
-							return values, false, true
 						}
+						return values, false, true
 					}
 					j += 2
 					continue

@@ -1,3 +1,4 @@
+// Package runtime implements the GoAgent runtime orchestration loop and event types.
 package runtime
 
 // EventType RuntimeEventType represents the category of a runtime event emitted by the
@@ -38,6 +39,8 @@ const (
 // RuntimeEvent is the cross-language payload for messages flowing out of the
 // runtime. The structure stays intentionally small to keep it easy to consume
 // from CLIs, HTTP handlers or tests.
+//
+//revive:disable-next-line exported // RuntimeEvent keeps public name for external consumers
 type RuntimeEvent struct {
 	Type     EventType      `json:"type"`
 	Message  string         `json:"message"`

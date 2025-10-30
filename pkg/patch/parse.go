@@ -126,7 +126,7 @@ func Parse(input string) ([]Operation, error) {
 		if err := flushHunk(); err != nil {
 			return err
 		}
-		if len(currentOp.Hunks) == 0 && !(currentOp.Type == OperationUpdate && strings.TrimSpace(currentOp.MovePath) != "") {
+		if len(currentOp.Hunks) == 0 && (currentOp.Type != OperationUpdate || strings.TrimSpace(currentOp.MovePath) == "") {
 			return fmt.Errorf("no hunks provided for %s", currentOp.Path)
 		}
 		operations = append(operations, *currentOp)

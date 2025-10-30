@@ -1,3 +1,7 @@
+// Package cli provides the command-line entry points and headless execution
+// helpers for the GoAgent runtime.
+// Package cli provides the command-line entry points and headless execution
+// helpers for the GoAgent runtime.
 package cli
 
 import (
@@ -31,7 +35,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// A missing .env file is fine, but other errors should be surfaced to help with debugging.
 		var pathErr *os.PathError
 		if !errors.As(err, &pathErr) {
-			fmt.Fprintf(stderr, "failed to load .env: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "failed to load .env: %v\n", err)
 			return 1
 		}
 	}
@@ -63,21 +67,21 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
-		fmt.Fprintln(stderr, "OPENAI_API_KEY must be set in the environment.")
+		_, _ = fmt.Fprintln(stderr, "OPENAI_API_KEY must be set in the environment.")
 		return 1
 	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "failed to determine working directory: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "failed to determine working directory: %v\n", err)
 		return 1
 	}
 
 	probeCtx := bootprobe.NewContext(cwd)
 	probeResult, probeSummary, combinedAugment := bootprobe.BuildAugmentation(probeCtx, *promptAugmentation)
 	if probeResult.HasCapabilities() && probeSummary != "" {
-		fmt.Fprintln(stdout, probeSummary)
-		fmt.Fprintln(stdout)
+		_, _ = fmt.Fprintln(stdout, probeSummary)
+		_, _ = fmt.Fprintln(stdout)
 	}
 
 	options := runtime.RuntimeOptions{
@@ -99,12 +103,12 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 		var rs researchSpec
 		if err := json.Unmarshal([]byte(spec), &rs); err != nil {
-			fmt.Fprintf(stderr, "invalid --research JSON: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "invalid --research JSON: %v\n", err)
 			return 2
 		}
 		rs.Goal = strings.TrimSpace(rs.Goal)
 		if rs.Goal == "" {
-			fmt.Fprintln(stderr, "--research requires non-empty goal")
+			_, _ = fmt.Fprintln(stderr, "--research requires non-empty goal")
 			return 2
 		}
 		if rs.Turns < 0 {
@@ -139,7 +143,7 @@ func runHeadlessResearch(ctx context.Context, options runtime.RuntimeOptions, st
 
 	agent, err := runtime.NewRuntime(options)
 	if err != nil {
-		fmt.Fprintln(stderr, "failed to create runtime:", err)
+		_, _ = fmt.Fprintln(stderr, "failed to create runtime:", err)
 		return 1
 	}
 	outputs := agent.Outputs()
@@ -172,18 +176,18 @@ func runHeadlessResearch(ctx context.Context, options runtime.RuntimeOptions, st
 
 	if success {
 		if lastAssistant != "" {
-			fmt.Fprintln(stdout, lastAssistant)
+			_, _ = fmt.Fprintln(stdout, lastAssistant)
 		}
 		return 0
 	}
 
 	// If we hit budget or otherwise closed without a success signal, treat as failure.
 	if lastAssistant != "" {
-		fmt.Fprintln(stderr, lastAssistant)
+		_, _ = fmt.Fprintln(stderr, lastAssistant)
 	} else if failedBudget {
-		fmt.Fprintln(stderr, "No solution found within turn budget.")
+		_, _ = fmt.Fprintln(stderr, "No solution found within turn budget.")
 	} else {
-		fmt.Fprintln(stderr, "Agent terminated without a final result.")
+		_, _ = fmt.Fprintln(stderr, "Agent terminated without a final result.")
 	}
 	return 1
 }

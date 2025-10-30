@@ -1,3 +1,4 @@
+// Package runtime implements the GoAgent runtime orchestration loop and command execution.
 package runtime
 
 import (

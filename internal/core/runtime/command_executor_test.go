@@ -105,7 +105,7 @@ func TestCommandExecutorExecuteInternal(t *testing.T) {
 	t.Parallel()
 
 	executor := NewCommandExecutor()
-	if err := executor.RegisterInternalCommand("beep", func(ctx context.Context, req InternalCommandRequest) (PlanObservationPayload, error) {
+	if err := executor.RegisterInternalCommand("beep", func(_ context.Context, req InternalCommandRequest) (PlanObservationPayload, error) {
 		if req.Name != "beep" {
 			return PlanObservationPayload{}, fmt.Errorf("unexpected name %q", req.Name)
 		}

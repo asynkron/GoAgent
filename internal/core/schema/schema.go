@@ -1,3 +1,4 @@
+// Package schema defines the JSON schema and tool definition shared with the model.
 package schema
 
 import (

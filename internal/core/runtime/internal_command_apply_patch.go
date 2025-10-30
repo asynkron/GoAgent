@@ -152,10 +152,10 @@ func parseApplyPatchOptions(commandLine, cwd string) (patch.FilesystemOptions, e
 		case "--respect-whitespace", "--no-ignore-whitespace", "-W":
 			opts.IgnoreWhitespace = false
 		default:
-			lower := strings.ToLower(token)
-			if lower == "--respect-whitespace" || lower == "--no-ignore-whitespace" {
+			switch strings.ToLower(token) {
+			case "--respect-whitespace", "--no-ignore-whitespace":
 				opts.IgnoreWhitespace = false
-			} else if lower == "--ignore-whitespace" {
+			case "--ignore-whitespace":
 				opts.IgnoreWhitespace = true
 			}
 		}

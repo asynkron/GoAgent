@@ -5,6 +5,7 @@ import "time"
 // MessageRole enumerates the chat roles supported by the runtime.
 type MessageRole string
 
+// Well-known chat roles used in conversation history.
 const (
 	RoleSystem    MessageRole = "system"
 	RoleUser      MessageRole = "user"
@@ -48,6 +49,7 @@ type CommandDraft struct {
 // PlanStatus represents execution status for a plan step.
 type PlanStatus string
 
+// Plan status values for step execution.
 const (
 	PlanPending   PlanStatus = "pending"
 	PlanCompleted PlanStatus = "completed"

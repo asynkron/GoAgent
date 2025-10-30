@@ -1,3 +1,4 @@
+// Package runtime implements the GoAgent runtime orchestration loop and configuration options.
 package runtime
 
 import (
@@ -11,6 +12,8 @@ import (
 // RuntimeOptions configures the Go runtime wrapper. It mirrors the top level
 // knobs exposed by the TypeScript runtime while keeping room for Go specific
 // ergonomics like injecting alternative readers or writers during tests.
+//
+//revive:disable-next-line exported // Keep RuntimeOptions name for clarity across packages
 type RuntimeOptions struct {
 	APIKey              string
 	APIBaseURL          string

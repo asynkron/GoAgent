@@ -330,7 +330,7 @@ func TestPlanExecutionLoopHandsFreeStopsAtPassLimit(t *testing.T) {
 	client.httpClient = &http.Client{Transport: transport}
 
 	executor := NewCommandExecutor()
-	if err := executor.RegisterInternalCommand("noop", func(ctx context.Context, req InternalCommandRequest) (PlanObservationPayload, error) {
+	if err := executor.RegisterInternalCommand("noop", func(_ context.Context, _ InternalCommandRequest) (PlanObservationPayload, error) {
 		return PlanObservationPayload{Summary: "noop", ExitCode: &zero}, nil
 	}); err != nil {
 		t.Fatalf("failed to register internal command: %v", err)

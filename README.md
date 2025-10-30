@@ -63,6 +63,16 @@ This sets the initial goal prompt, caps execution at 20 passes, and auto‑respo
 Please continue to work on the set goal. No human available. Goal: try to find any race-condition bugs in this codebase
 ```
 
+Exit codes and output in hands-free mode
+
+- Success (goal completed or no further steps):
+  - Exit code: `0`
+  - STDOUT: final assistant message
+- Failure (turn budget reached without a solution or runtime error):
+  - Exit code: non‑zero
+  - STDERR: final assistant message or an explanatory error
+
+
 If you prefer an HTTP/SSE example, run:
 
 ```
