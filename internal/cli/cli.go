@@ -116,6 +116,9 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			options.MaxPasses = rs.Turns
 		}
 		options.HandsFreeAutoReply = fmt.Sprintf("Please continue to work on the set goal. No human available. Goal: %s", rs.Goal)
+
+		// Run in headless mode and exit on completion.
+		return runHeadlessResearch(ctx, options, stdout, stderr)
 	} else if p := strings.TrimSpace(*prompt); p != "" {
 		// TUI is the only UI. If a prompt is provided, set hands-free so the
 		// runtime will submit it immediately on startup.
@@ -123,4 +126,64 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		options.HandsFreeTopic = p
 	}
 	return tuiui.Run(ctx, options)
+}
+
+// runHeadlessResearch executes the runtime without the TUI, watching events
+// to determine success or failure, and printing the final assistant message
+// to stdout on success or stderr on failure. It returns a POSIX exit code.
+func runHeadlessResearch(ctx context.Context, options runtime.RuntimeOptions, stdout, stderr io.Writer) int {
+	// Ensure we don't read stdin or forward outputs internally.
+	options.UseStreaming = true
+	options.DisableOutputForwarding = true
+	options.DisableInputReader = true
+
+	agent, err := runtime.NewRuntime(options)
+	if err != nil {
+		fmt.Fprintln(stderr, "failed to create runtime:", err)
+		return 1
+	}
+	outputs := agent.Outputs()
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() { _ = agent.Run(runCtx) }()
+
+	var lastAssistant string
+	var success bool
+	var failedBudget bool
+
+	for evt := range outputs {
+		switch evt.Type {
+		case runtime.EventTypeAssistantMessage:
+			// Capture latest full assistant message.
+			if m := strings.TrimSpace(evt.Message); m != "" {
+				lastAssistant = m
+			}
+		case runtime.EventTypeStatus:
+			if strings.Contains(evt.Message, "Hands-free session complete") {
+				success = true
+			}
+		case runtime.EventTypeError:
+			if strings.Contains(evt.Message, "Maximum pass limit") {
+				failedBudget = true
+			}
+		}
+	}
+
+	if success {
+		if lastAssistant != "" {
+			fmt.Fprintln(stdout, lastAssistant)
+		}
+		return 0
+	}
+
+	// If we hit budget or otherwise closed without a success signal, treat as failure.
+	if lastAssistant != "" {
+		fmt.Fprintln(stderr, lastAssistant)
+	} else if failedBudget {
+		fmt.Fprintln(stderr, "No solution found within turn budget.")
+	} else {
+		fmt.Fprintln(stderr, "Agent terminated without a final result.")
+	}
+	return 1
 }
