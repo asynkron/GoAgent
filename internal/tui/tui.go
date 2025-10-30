@@ -320,16 +320,20 @@ func (m *model) renderPlan() string {
 		var box, color string
 		switch status {
 		case string(runtimepkg.PlanCompleted):
-			box, color = "[x]", "70" // green
+			// Completed: green circle
+			box, color = "🟢", "70"
 		case string(runtimepkg.PlanFailed):
-			box, color = "[!]", "196" // red
+			// Failed: red circle
+			box, color = "🔴", "196"
 		case "executing":
-			box, color = "[~]", "214" // yellow/orange
+			// Running: yellow circle
+			box, color = "🟡", "214"
 		default:
+			// Pending/Waiting/Ready: white circle
+			box, color = "⚪", "250"
 			if len(step.WaitingForID) > 0 {
-				box, color = "[ ]", "244" // waiting
-			} else {
-				box, color = "[ ]", "33" // ready
+				// Waiting on dependencies, render dimmer
+				color = "244"
 			}
 		}
 		line := lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(box)
