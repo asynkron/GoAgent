@@ -195,6 +195,10 @@ func (m *model) renderTranscript() string {
 
 // refresh recomposes the viewport content from transcript + any streaming.
 func (m *model) refresh() {
+	// Preserve whether the viewport was already at the bottom. This makes
+	// scrolling sticky to the bottom without stealing manual scroll position.
+	wasAtBottom := m.vp.AtBottom()
+
 	content := m.renderTranscript()
 	if m.currentRendered != "" {
 		content += m.currentRendered
@@ -210,7 +214,11 @@ func (m *model) refresh() {
 		}
 	}
 	m.vp.SetContent(content)
-	m.vp.GotoBottom()
+	// Only auto-scroll to the bottom if we were already at bottom (sticky)
+	// or when actively streaming new content.
+	if wasAtBottom || m.streaming {
+		m.vp.GotoBottom()
+	}
 }
 
 // countRenderedLines returns the number of visual lines for the given content.
@@ -492,6 +500,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case tea.MouseMsg:
+		// Forward mouse events (including wheel) to the viewport so users can scroll
+		// the transcript with the mouse, even while the textarea is focused.
+		m.vp, cmd = m.vp.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
 	case spinner.TickMsg:
 		// Forward non-key events to the viewport so it can update animations/state.
 		m.vp, cmd = m.vp.Update(msg)
@@ -510,9 +526,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// Do NOT pass raw key events to the viewport; this prevents the
-		// viewport from capturing 'u' and 'd' for half-page scroll while
-		// the textarea is focused and the user is typing.
+		// Allow explicit scrolling keys to be handled by the viewport even
+		// while the textarea is focused. We still block the default 'u'/'d'
+		// half-page shortcuts by unbinding them in the viewport keymap.
+		switch msg.Type {
+		case tea.KeyPgUp, tea.KeyPgDown, tea.KeyUp, tea.KeyDown, tea.KeyHome, tea.KeyEnd:
+			m.vp, cmd = m.vp.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m, tea.Batch(cmds...)
+		}
+		// Do NOT pass other raw key events to the viewport; this prevents the
+		// viewport from capturing common typing keys while the user is writing.
 		if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc {
 			if m.cancel != nil {
 				m.cancel()
@@ -805,7 +831,7 @@ func Run(ctx context.Context, options runtimepkg.RuntimeOptions) int {
 	runCtx, cancel := context.WithCancel(ctx)
 	go func() { _ = agent.Run(runCtx) }()
 
-	p := tea.NewProgram(newModel(agent, outputs, cancel), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(agent, outputs, cancel), tea.WithAltScreen(), tea.WithMouseAllMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
 		return 1
