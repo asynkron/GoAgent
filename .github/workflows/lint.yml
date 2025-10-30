@@ -26,7 +26,7 @@ jobs:
           # Ensure GOPATH/bin is on PATH for subsequent steps
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           # Build golangci-lint from source using the toolchain configured above
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v2
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
           golangci-lint version
       - name: Run golangci-lint
         run: |
