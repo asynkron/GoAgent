@@ -301,7 +301,9 @@ func (m *model) renderPlan() string {
 	}
 	var inner strings.Builder
 	// Header
-	inner.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")).Render("Plan:"))
+	// Removed the literal "Plan:" label per user request.
+	// Keep styling invocation (with empty content) to avoid altering surrounding layout.
+	inner.WriteString(lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")).Render(""))
 	inner.WriteString("\n")
 	// Lines
 	for _, step := range m.planSteps {
