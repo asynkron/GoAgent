@@ -9,6 +9,9 @@ on:
 jobs:
   golangci:
     runs-on: ubuntu-latest
+    env:
+      # Force using the toolchain declared by go.mod during both install and run
+      GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v4
       - name: Set up Go
@@ -16,11 +19,16 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: true
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          # Build golangci-lint from source using the Go version set up above (from go.mod),
-          # ensuring the linter is compiled with Go 1.25 and compatible with the module target.
-          install-mode: go
-          args: --timeout=5m
+      - name: Install golangci-lint with project toolchain
+        run: |
+          set -euo pipefail
+          echo "Using Go: $(go version)"
+          # Ensure GOPATH/bin is on PATH for subsequent steps
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          # Build golangci-lint from source using the toolchain configured above
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+          golangci-lint version
+      - name: Run golangci-lint
+        run: |
+          set -euo pipefail
+          golangci-lint run --timeout=5m
