@@ -165,6 +165,16 @@ func (c *OpenAIClient) RequestPlanStreamingResponses(ctx context.Context, histor
 	var lastEmittedMessage string
 	var lastEmittedReasoningCount int
 
+	// Reset streaming state when a new tool call ID is observed.
+	resetCall := func(newID string) {
+		if newID != "" && newID != toolID {
+			toolID = newID
+			toolArgs = ""
+			lastEmittedMessage = ""
+			lastEmittedReasoningCount = 0
+		}
+	}
+
 	// Debug streaming is already enabled at function entry.
 
 	// Extract the "message" field from the partially-streamed JSON arguments.
@@ -246,7 +256,7 @@ func (c *OpenAIClient) RequestPlanStreamingResponses(ctx context.Context, histor
 				toolName = name
 			}
 			if id, _ := evt["call_id"].(string); id != "" {
-				toolID = id
+				resetCall(id)
 			}
 			// Arguments may be provided as top-level "arguments" string, as a
 			// raw delta string, or nested under a delta object.

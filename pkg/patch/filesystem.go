@@ -75,6 +75,8 @@ func (ws *filesystemWorkspace) Ensure(path string, create bool) (*state, error) 
 		if info.IsDir() {
 			return nil, fmt.Errorf("cannot add directory %s", rel)
 		}
+		// Project semantics: treat add over existing as new. Start with
+		// empty content and mark as new so status reports "A".
 		state := &state{
 			path:         abs,
 			relativePath: rel,
@@ -237,12 +239,18 @@ func (ws *filesystemWorkspace) resolvePath(relative string) (string, string, err
 	if rel == "" {
 		return "", "", fmt.Errorf("invalid patch path")
 	}
+	// Normalize the supplied path and force it to be treated relative to the workspace.
 	cleaned := filepath.Clean(rel)
-	var abs string
-	if filepath.IsAbs(cleaned) {
-		abs = filepath.Clean(cleaned)
-	} else {
-		abs = filepath.Clean(filepath.Join(ws.workingDir, cleaned))
+	// Strip volume name (Windows) and leading separators from absolute inputs.
+	if vol := filepath.VolumeName(cleaned); vol != "" {
+		cleaned = strings.TrimPrefix(cleaned, vol)
+	}
+	cleaned = strings.TrimPrefix(cleaned, string(filepath.Separator))
+	base := filepath.Clean(ws.workingDir)
+	abs := filepath.Clean(filepath.Join(base, cleaned))
+	// Ensure the resolved absolute path stays within the workspace directory.
+	if relToBase, err := filepath.Rel(base, abs); err != nil || strings.HasPrefix(relToBase, "..") {
+		return "", "", fmt.Errorf("invalid patch path outside workspace: %s", rel)
 	}
 	return abs, cleaned, nil
 }
