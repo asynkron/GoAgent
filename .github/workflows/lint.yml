@@ -19,14 +19,14 @@ jobs:
         with:
           go-version-file: go.mod
           check-latest: true
-      - name: Install golangci-lint with project toolchain
+      - name: Install golangci-lint v2 with project toolchain
         run: |
           set -euo pipefail
           echo "Using Go: $(go version)"
           # Ensure GOPATH/bin is on PATH for subsequent steps
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
           # Build golangci-lint from source using the toolchain configured above
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v2
           golangci-lint version
       - name: Run golangci-lint
         run: |
