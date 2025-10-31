@@ -250,10 +250,20 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 			PlanObservation: []StepObservation{stepResult},
 		}}
 		if updateErr := r.plan.UpdateStatus(step.ID, status, planObservation); updateErr != nil {
+			updateErr = fmt.Errorf("execution: failed to update plan status for step %q: %w", step.ID, updateErr)
+			r.options.Logger.Error(ctx, "Failed to update plan status", updateErr,
+				Field("step_id", step.ID),
+				Field("status", string(status)),
+			)
 			r.emit(RuntimeEvent{
 				Type:    EventTypeError,
 				Message: fmt.Sprintf("Failed to update plan status for step %s: %v", step.ID, updateErr),
 				Level:   StatusLevelError,
+				Metadata: map[string]any{
+					"step_id": step.ID,
+					"status":  string(status),
+					"error":   updateErr.Error(),
+				},
 			})
 			if finalErr == nil {
 				finalErr = updateErr

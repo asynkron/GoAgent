@@ -154,10 +154,6 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 		Field("prompt_length", len(prompt)),
 	)
 
-	r.options.Logger.Info(ctx, "Processing user prompt",
-		Field("prompt_length", len(prompt)),
-	)
-
 	r.emit(RuntimeEvent{
 		Type:    EventTypeStatus,
 		Message: fmt.Sprintf("Processing prompt with model %s…", r.options.Model),
@@ -217,12 +213,16 @@ func (r *Runtime) requestPlan(ctx context.Context) (*PlanResponse, ToolCall, err
 			toolCall, err = r.client.RequestPlan(ctx, history)
 		}
 		if err != nil {
-			return nil, ToolCall{}, err
+			r.options.Logger.Error(ctx, "Failed to request plan from OpenAI", err)
+			return nil, ToolCall{}, fmt.Errorf("requestPlan: API request failed: %w", err)
 		}
 
 		plan, retry, validationErr := r.validatePlanToolCall(toolCall)
 		if validationErr != nil {
-			return nil, ToolCall{}, validationErr
+			r.options.Logger.Error(ctx, "Plan validation failed", validationErr,
+				Field("tool_call_id", toolCall.ID),
+			)
+			return nil, ToolCall{}, fmt.Errorf("requestPlan: validation failed: %w", validationErr)
 		}
 		if retry {
 			retryCount++

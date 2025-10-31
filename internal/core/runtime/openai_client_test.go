@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/asynkron/goagent/internal/core/schema"
 )
@@ -51,7 +52,7 @@ func TestRequestPlanUsesFunctionToolShape(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewOpenAIClient("test-key", "test-model", "", server.URL, nil, nil)
+	client, err := NewOpenAIClient("test-key", "test-model", "", server.URL, nil, nil, nil, 120*time.Second)
 	if err != nil {
 		t.Fatalf("unexpected client error: %v", err)
 	}

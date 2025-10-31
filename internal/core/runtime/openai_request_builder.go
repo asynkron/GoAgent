@@ -71,43 +71,80 @@ func (c *OpenAIClient) buildRequestBody(inputMsgs []map[string]any) ([]byte, err
 
 // executeRequest performs the HTTP request and returns the response.
 // It handles request building, authentication, and error checking.
-func (c *OpenAIClient) executeRequest(ctx context.Context, payload []byte, start time.Time) (*http.Response, error) {
-	// Derive API root from configured baseURL.
-	apiRoot := strings.TrimRight(c.baseURL, "/")
-	url := apiRoot + "/responses"
+// This method uses the retry configuration if available.
+func (c *OpenAIClient) executeRequest(ctx context.Context, payload []byte, start time.Time, retryConfig *RetryConfig) (*http.Response, error) {
+	var resp *http.Response
+	var lastErr error
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		c.logger.Error(ctx, "Failed to build OpenAI request", err,
-			Field("url", url),
-		)
-		return nil, fmt.Errorf("openai(responses): build request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
+	err := executeWithRetry(ctx, retryConfig, func() error {
+		// Create new request for each retry attempt
+		apiRoot := strings.TrimRight(c.baseURL, "/")
+		url := apiRoot + "/responses"
 
-	resp, err := c.httpClient.Do(req)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		if err != nil {
+			c.logger.Error(ctx, "Failed to build OpenAI request", err,
+				Field("url", url),
+			)
+			lastErr = fmt.Errorf("openai(responses): build request: %w", err)
+			return lastErr
+		}
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err = c.httpClient.Do(req)
+		if err != nil {
+			duration := time.Since(start)
+			retryable := isRetryableError(err)
+			c.logger.Error(ctx, "OpenAI API request failed", err,
+				Field("url", url),
+				Field("duration_ms", duration.Milliseconds()),
+				Field("retryable", retryable),
+			)
+
+			lastErr = &retryableAPIError{
+				err:       fmt.Errorf("openai(responses): do request: %w", err),
+				retryable: retryable,
+			}
+			return lastErr
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			duration := time.Since(start)
+			retryable := isRetryableStatusCode(resp.StatusCode)
+
+			c.logger.Error(ctx, "OpenAI API returned error status", fmt.Errorf("status %s: %s", resp.Status, string(msg)),
+				Field("status_code", resp.StatusCode),
+				Field("duration_ms", duration.Milliseconds()),
+				Field("retryable", retryable),
+			)
+
+			lastErr = &retryableAPIError{
+				err:        fmt.Errorf("openai(responses): status %s: %s", resp.Status, string(msg)),
+				statusCode: resp.StatusCode,
+				retryable:  retryable,
+			}
+			resp = nil // Clear response on error
+			return lastErr
+		}
+
+		return nil // Success
+	})
+
 	if err != nil {
 		duration := time.Since(start)
 		c.metrics.RecordAPICall(duration, false)
-		c.logger.Error(ctx, "OpenAI API request failed", err,
-			Field("url", url),
-			Field("duration_ms", duration.Milliseconds()),
-		)
-		return nil, fmt.Errorf("openai(responses): do request: %w", err)
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, err
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		duration := time.Since(start)
-		c.metrics.RecordAPICall(duration, false)
-		c.logger.Error(ctx, "OpenAI API returned error status", fmt.Errorf("status %s: %s", resp.Status, string(msg)),
-			Field("status_code", resp.StatusCode),
-			Field("duration_ms", duration.Milliseconds()),
-		)
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("openai(responses): status %s: %s", resp.Status, string(msg))
-	}
+	// Success - record metrics
+	duration := time.Since(start)
+	c.metrics.RecordAPICall(duration, true)
 
 	return resp, nil
 }

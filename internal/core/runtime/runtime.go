@@ -2,6 +2,9 @@ package runtime
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +40,10 @@ type Runtime struct {
 	agentName string
 
 	contextBudget ContextBudget
+
+	// logFileCloser holds a reference to the log file if one was opened,
+	// so it can be closed when the runtime shuts down.
+	logFileCloser io.Closer
 }
 
 // NewRuntime configures a new runtime with the provided options.
@@ -46,9 +53,14 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		return nil, err
 	}
 
-	client, err := NewOpenAIClient(options.APIKey, options.Model, options.ReasoningEffort, options.APIBaseURL, options.Logger, options.Metrics)
+	httpTimeout := options.HTTPTimeout
+	if httpTimeout == 0 {
+		httpTimeout = 120 * time.Second
+	}
+
+	client, err := NewOpenAIClient(options.APIKey, options.Model, options.ReasoningEffort, options.APIBaseURL, options.Logger, options.Metrics, options.APIRetryConfig, httpTimeout)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("runtime: failed to create OpenAI client: %w", err)
 	}
 
 	initialHistory := []ChatMessage{{
@@ -69,15 +81,22 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		agentName:     "main",
 		contextBudget: ContextBudget{MaxTokens: options.MaxContextTokens, CompactWhenPercent: options.CompactWhenPercent},
 	}
+
+	// If logger was created from a file, extract and store the file handle for cleanup
+	if stdLogger, ok := options.Logger.(*StdLogger); ok {
+		if file, ok := stdLogger.writer.(*os.File); ok {
+			rt.logFileCloser = file
+		}
+	}
 	executor := NewCommandExecutor(options.Logger, options.Metrics)
 	if err := registerBuiltinInternalCommands(rt, executor); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("runtime: failed to register builtin internal commands: %w", err)
 	}
 	rt.executor = executor
 
 	for name, handler := range options.InternalCommands {
 		if err := rt.executor.RegisterInternalCommand(name, handler); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("runtime: failed to register internal command %q: %w", name, err)
 		}
 	}
 
@@ -191,6 +210,14 @@ func (r *Runtime) close() {
 	r.closeOnce.Do(func() {
 		close(r.closed)
 		close(r.outputs)
+		// Close log file if one was opened
+		if r.logFileCloser != nil {
+			if err := r.logFileCloser.Close(); err != nil {
+				// Log to stderr since logger might be closed
+				fmt.Fprintf(r.options.OutputWriter, "warning: failed to close log file: %v\n", err)
+			}
+			r.logFileCloser = nil
+		}
 	})
 }
 

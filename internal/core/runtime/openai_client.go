@@ -24,12 +24,13 @@ type OpenAIClient struct {
 	baseURL         string
 	logger          Logger
 	metrics         Metrics
+	retryConfig     *RetryConfig
 }
 
 const defaultOpenAIBaseURL = "https://api.openai.com/v1"
 
 // NewOpenAIClient configures the client with the provided API key and model identifier.
-func NewOpenAIClient(apiKey, model, reasoningEffort, baseURL string, logger Logger, metrics Metrics) (*OpenAIClient, error) {
+func NewOpenAIClient(apiKey, model, reasoningEffort, baseURL string, logger Logger, metrics Metrics, retryConfig *RetryConfig, httpTimeout time.Duration) (*OpenAIClient, error) {
 	if apiKey == "" {
 		return nil, errors.New("openai: API key is required")
 	}
@@ -55,12 +56,13 @@ func NewOpenAIClient(apiKey, model, reasoningEffort, baseURL string, logger Logg
 		model:           model,
 		reasoningEffort: reasoningEffort,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: httpTimeout,
 		},
-		tool:    tool,
-		baseURL: baseURL,
-		logger:  logger,
-		metrics: metrics,
+		tool:        tool,
+		baseURL:     baseURL,
+		logger:      logger,
+		metrics:     metrics,
+		retryConfig: retryConfig,
 	}, nil
 }
 
@@ -94,13 +96,17 @@ func (c *OpenAIClient) RequestPlanStreamingResponses(ctx context.Context, histor
 	inputMsgs := buildMessagesFromHistory(history)
 	payload, err := c.buildRequestBody(inputMsgs)
 	if err != nil {
-		return ToolCall{}, fmt.Errorf("openai(responses): encode request: %w", err)
+		c.logger.Error(ctx, "Failed to build OpenAI request body", err,
+			Field("model", c.model),
+			Field("history_length", len(history)),
+		)
+		return ToolCall{}, fmt.Errorf("openai: build request body: %w", err)
 	}
 
-	// Execute request
-	resp, err := c.executeRequest(ctx, payload, start)
+	// Execute request with retry logic
+	resp, err := c.executeRequest(ctx, payload, start, c.retryConfig)
 	if err != nil {
-		return ToolCall{}, err
+		return ToolCall{}, fmt.Errorf("openai: request failed after retries: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -115,8 +121,9 @@ func (c *OpenAIClient) RequestPlanStreamingResponses(ctx context.Context, histor
 		c.metrics.RecordAPICall(duration, false)
 		c.logger.Error(ctx, "OpenAI API stream parsing failed", err,
 			Field("duration_ms", duration.Milliseconds()),
+			Field("model", c.model),
 		)
-		return ToolCall{}, err
+		return ToolCall{}, fmt.Errorf("openai: stream parsing failed: %w", err)
 	}
 
 	if toolCall.Name != "" {

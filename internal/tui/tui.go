@@ -508,11 +508,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
-		// Forward mouse events (including wheel) to the viewport so users can scroll
-		// the transcript with the mouse, even while the textarea is focused.
-		m.vp, cmd = m.vp.Update(msg)
-		if cmd != nil {
-			cmds = append(cmds, cmd)
+		// With mouse reporting disabled, this case should rarely be reached.
+		// If mouse events do come through (e.g., from some terminals that send
+		// them anyway), we can optionally handle wheel events here.
+		// But normally, mouse events won't be captured when mouse reporting is off.
+		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+			// If wheel events somehow come through, handle them for scrolling
+			m.vp, cmd = m.vp.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 		return m, tea.Batch(cmds...)
 	case spinner.TickMsg:
@@ -836,7 +841,10 @@ func Run(ctx context.Context, options runtimepkg.RuntimeOptions) int {
 	runCtx, cancel := context.WithCancel(ctx)
 	go func() { _ = agent.Run(runCtx) }()
 
-	p := tea.NewProgram(newModel(agent, outputs, cancel), tea.WithAltScreen(), tea.WithMouseAllMotion())
+	// Disable mouse reporting entirely to allow terminal-native text selection.
+	// This means mouse wheel scrolling won't work, but users can still scroll with
+	// keyboard (Page Up/Down, arrow keys) and select text normally with the mouse.
+	p := tea.NewProgram(newModel(agent, outputs, cancel), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "tui error:", err)
 		return 1

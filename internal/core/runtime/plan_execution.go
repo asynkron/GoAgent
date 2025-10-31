@@ -82,11 +82,16 @@ func (r *Runtime) checkPassLimit(ctx context.Context, pass int) bool {
 func (r *Runtime) handlePlanRequestError(ctx context.Context, err error, pass int) {
 	r.options.Logger.Error(ctx, "Failed to request plan from OpenAI", err,
 		Field("pass", pass),
+		Field("model", r.options.Model),
 	)
 	r.emit(RuntimeEvent{
 		Type:    EventTypeError,
-		Message: fmt.Sprintf("Failed to contact OpenAI: %v", err),
+		Message: fmt.Sprintf("Failed to contact OpenAI (pass %d): %v", pass, err),
 		Level:   StatusLevelError,
+		Metadata: map[string]any{
+			"pass":  pass,
+			"error": err.Error(),
+		},
 	})
 	r.emitRequestInput("You can provide another prompt.")
 }

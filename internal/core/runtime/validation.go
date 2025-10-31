@@ -77,7 +77,8 @@ func (r *Runtime) validatePlanToolCall(toolCall ToolCall) (*PlanResponse, bool, 
 			r.handlePlanValidationFailure(toolCall, payload, r.buildValidationAutoPrompt(payload))
 			return nil, true, nil
 		}
-		return nil, false, err
+		// Non-schema validation error (e.g., schema loading error)
+		return nil, false, fmt.Errorf("validatePlanToolCall: schema validation error: %w", err)
 	}
 
 	return &plan, false, nil

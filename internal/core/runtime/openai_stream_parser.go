@@ -81,7 +81,12 @@ func (p *streamParser) parse() (ToolCall, error) {
 func (p *streamParser) parseEvent(chunkData string) (map[string]any, error) {
 	var evt map[string]any
 	if err := json.Unmarshal([]byte(chunkData), &evt); err != nil {
-		return nil, err
+		// Truncate chunk data for error message if too long
+		chunkPreview := chunkData
+		if len(chunkPreview) > 200 {
+			chunkPreview = chunkPreview[:200] + "..."
+		}
+		return nil, fmt.Errorf("parseEvent: failed to parse JSON event: %w (chunk: %q)", err, chunkPreview)
 	}
 	if p.debugStream {
 		t, _ := evt["type"].(string)

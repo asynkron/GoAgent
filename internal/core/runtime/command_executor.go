@@ -181,27 +181,39 @@ func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObser
 		observation.Details = runErr.Error()
 	}
 
+	duration := time.Since(start)
+
 	// If the command failed, persist a detailed failure report for inspection.
 	if runErr != nil {
-		_ = writeFailureLog(step, stdout, stderr, runErr)
-	}
-
-	duration := time.Since(start)
-	e.metrics.RecordCommandExecution(step.ID, duration, runErr == nil)
-	if runErr != nil {
+		if err := writeFailureLog(step, stdout, stderr, runErr); err != nil {
+			// Log warning but don't fail execution - failure logging is best-effort
+			e.logger.Warn(ctx, "Failed to write failure log",
+				Field("step_id", step.ID),
+				Field("error", err.Error()),
+			)
+		}
+		e.metrics.RecordCommandExecution(step.ID, duration, false)
 		e.logger.Error(ctx, "Command execution failed", runErr,
 			Field("step_id", step.ID),
 			Field("shell", step.Command.Shell),
 			Field("duration_ms", duration.Milliseconds()),
 		)
-	} else {
-		e.logger.Debug(ctx, "Command execution completed",
-			Field("step_id", step.ID),
-			Field("duration_ms", duration.Milliseconds()),
-		)
+		// Return error with step context
+		if exitErr == nil {
+			return observation, fmt.Errorf("command[%s]: execution failed: %w", step.ID, runErr)
+		}
+		// Exit errors include exit code in the wrapped error
+		return observation, fmt.Errorf("command[%s]: exited with code %d: %w", step.ID, *observation.ExitCode, runErr)
 	}
 
-	return observation, runErr
+	e.metrics.RecordCommandExecution(step.ID, duration, true)
+	e.logger.Debug(ctx, "Command execution completed",
+		Field("step_id", step.ID),
+		Field("duration_ms", duration.Milliseconds()),
+	)
+
+	// Success - no error to return
+	return observation, nil
 }
 
 // writeFailureLog persists a diagnostic file under .goagent/ whenever a command
@@ -266,26 +278,41 @@ func writeFailureLog(step PlanStep, fullStdout, fullStderr []byte, runErr error)
 		_, _ = b.Write([]byte("\n"))
 	}
 
-	return os.WriteFile(path, b.Bytes(), 0o644)
+	if err := os.WriteFile(path, b.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("writeFailureLog: failed to write file %q: %w", path, err)
+	}
+	return nil
 }
 
 func (e *CommandExecutor) executeInternal(ctx context.Context, step PlanStep) (PlanObservationPayload, error) {
 	invocation, err := parseInternalInvocation(step)
 	if err != nil {
-		return PlanObservationPayload{}, fmt.Errorf("command: %w", err)
+		e.logger.Error(ctx, "Failed to parse internal command invocation", err,
+			Field("step_id", step.ID),
+			Field("command_run", step.Command.Run),
+		)
+		return PlanObservationPayload{}, fmt.Errorf("command[%s]: parse internal invocation: %w", step.ID, err)
 	}
 
 	handler, ok := e.internal[invocation.Name]
 	if !ok {
-		return PlanObservationPayload{}, fmt.Errorf("command: unknown internal command %q", invocation.Name)
+		e.logger.Error(ctx, "Unknown internal command", nil,
+			Field("step_id", step.ID),
+			Field("command_name", invocation.Name),
+		)
+		return PlanObservationPayload{}, fmt.Errorf("command[%s]: unknown internal command %q", step.ID, invocation.Name)
 	}
 
 	payload, execErr := handler(ctx, invocation)
 	if execErr != nil {
+		e.logger.Error(ctx, "Internal command execution failed", execErr,
+			Field("step_id", step.ID),
+			Field("command_name", invocation.Name),
+		)
 		if payload.Details == "" {
 			payload.Details = execErr.Error()
 		}
-		return payload, execErr
+		return payload, fmt.Errorf("command[%s]: internal command %q failed: %w", step.ID, invocation.Name, execErr)
 	}
 	if payload.ExitCode == nil {
 		zero := 0
@@ -298,7 +325,7 @@ func parseInternalInvocation(step PlanStep) (InternalCommandRequest, error) {
 	run := strings.TrimSpace(step.Command.Run)
 	tokens, err := tokenizeInternalCommand(run)
 	if err != nil {
-		return InternalCommandRequest{}, err
+		return InternalCommandRequest{}, fmt.Errorf("parse internal command %q: %w", run, err)
 	}
 	if len(tokens) == 0 {
 		return InternalCommandRequest{}, errors.New("internal command: missing command name")

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -37,11 +38,32 @@ func (r *Runtime) planningHistorySnapshot() []ChatMessage {
 		total, per := estimateHistoryTokenUsage(r.history)
 		if total > limit {
 			beforeLen := len(r.history)
-			compactHistory(r.history, per, total, limit)
+			// Add safeguard: limit iterations to prevent infinite loops
+			// If summarization doesn't reduce tokens enough, we'll stop after max iterations
+			const maxCompactionIterations = 10
+			iterations := 0
+			for total > limit && iterations < maxCompactionIterations {
+				var changed bool
+				total, per, changed = compactHistory(r.history, per, total, limit)
+				iterations++
+				if !changed {
+					// No progress made - all eligible messages already summarized
+					// or we can't make progress. Break to avoid infinite loop.
+					break
+				}
+			}
 			afterLen := len(r.history)
 			removed := beforeLen - afterLen
 			// Note: removed might be 0 if we just summarized without removing entries
 			r.options.Metrics.RecordContextCompaction(removed, afterLen)
+
+			if iterations >= maxCompactionIterations && total > limit {
+				r.options.Logger.Warn(context.Background(), "History compaction reached max iterations without meeting budget",
+					Field("total_tokens", total),
+					Field("limit", limit),
+					Field("iterations", iterations),
+				)
+			}
 		}
 	}
 

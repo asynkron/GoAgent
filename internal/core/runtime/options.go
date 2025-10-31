@@ -73,6 +73,14 @@ type RuntimeOptions struct {
 	// output channel. Zero means wait indefinitely.
 	EmitTimeout time.Duration
 
+	// APIRetryConfig controls retry behavior for transient API failures.
+	// If nil, no retries are attempted.
+	APIRetryConfig *RetryConfig
+
+	// HTTPTimeout sets the timeout for HTTP requests to the OpenAI API.
+	// If zero, defaults to 120 seconds.
+	HTTPTimeout time.Duration
+
 	// ExitCommands are matched (case-insensitive) by the default input
 	// reader to trigger a graceful shutdown.
 	ExitCommands []string
@@ -177,6 +185,7 @@ func (o *RuntimeOptions) setDefaults() {
 			// Try to open the file for appending
 			if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
 				writer = f
+				// Store the file handle so it can be closed later (will be set by runtime)
 			}
 			// If file open failed, silently fall back to NoOpLogger
 		}
