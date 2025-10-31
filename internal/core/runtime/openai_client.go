@@ -113,24 +113,18 @@ func (c *OpenAIClient) RequestPlanStreamingResponses(ctx context.Context, histor
 		"model":  c.model,
 		"input":  inputMsgs,
 		"stream": true,
-		// Define the function tool using the nested Responses API shape.
-		// See: tools: [{ "type": "function", "function": { name, description, parameters } }]
+		// Define the function tool in the flat Responses shape and require a tool call.
 		"tools": []map[string]any{
 			{
-				"type": "function",
-				"function": map[string]any{
-					"name":        c.tool.Name,
-					"description": c.tool.Description,
-					"parameters":  c.tool.Parameters,
-				},
+				"type":        "function",
+				"name":        c.tool.Name,
+				"description": c.tool.Description,
+				"parameters":  c.tool.Parameters,
 			},
 		},
-		// Force a tool call to our specific function. If you only want to
-		// require any tool call, you could set "required" instead.
-		"tool_choice": map[string]any{
-			"type":     "function",
-			"function": map[string]any{"name": c.tool.Name},
-		},
+		// Require a tool call; with only one tool defined, this forces the model
+		// to call our tool with arguments.
+		"tool_choice": "required",
 	}
 	if c.reasoningEffort != "" {
 		reqBody["reasoning"] = map[string]any{"effort": c.reasoningEffort}

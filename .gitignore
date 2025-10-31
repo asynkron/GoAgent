@@ -39,3 +39,4 @@ go.work.sum
 
 /.goagent/
 
+/.gocache/
