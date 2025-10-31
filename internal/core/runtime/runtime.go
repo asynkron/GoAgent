@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"time"
@@ -157,6 +158,7 @@ func (r *Runtime) emit(evt RuntimeEvent) {
 	}
 
 	if r.options.EmitTimeout <= 0 {
+		// No timeout: block until sent or runtime is closed
 		select {
 		case r.outputs <- evt:
 		case <-r.closed:
@@ -164,13 +166,24 @@ func (r *Runtime) emit(evt RuntimeEvent) {
 		return
 	}
 
+	// With timeout: attempt to send with a deadline
 	timer := time.NewTimer(r.options.EmitTimeout)
 	defer timer.Stop()
 
 	select {
 	case r.outputs <- evt:
+		// Successfully sent
 	case <-timer.C:
+		// Timeout: channel is full or consumer is blocked
+		// Log warning and track metrics, but don't block the runtime
+		r.options.Logger.Warn(context.Background(), "Event dropped: output channel full or consumer blocked",
+			Field("event_type", evt.Type),
+			Field("timeout_ms", r.options.EmitTimeout.Milliseconds()),
+			Field("output_buffer_size", r.options.OutputBuffer),
+		)
+		r.options.Metrics.RecordDroppedEvent(string(evt.Type))
 	case <-r.closed:
+		// Runtime is shutting down
 	}
 }
 

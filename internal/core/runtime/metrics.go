@@ -19,6 +19,8 @@ type Metrics interface {
 	RecordPlanStep(stepID string, status PlanStatus)
 	// RecordPass records a plan execution pass.
 	RecordPass(passNumber int)
+	// RecordDroppedEvent records that an event was dropped due to channel timeout.
+	RecordDroppedEvent(eventType string)
 	// GetSnapshot returns the current metrics snapshot.
 	GetSnapshot() MetricsSnapshot
 	// Reset clears all metrics (useful for testing).
@@ -32,6 +34,7 @@ type MetricsSnapshot struct {
 	ContextCompactions int64
 	PlanSteps          map[string]int64 // status -> count
 	TotalPasses        int64
+	DroppedEvents      int64
 	LastAPICallTime    time.Time
 	LastCommandTime    time.Time
 }
@@ -64,6 +67,7 @@ func (n *NoOpMetrics) RecordCommandExecution(_ string, _ time.Duration, _ bool) 
 func (n *NoOpMetrics) RecordContextCompaction(_, _ int)                         {}
 func (n *NoOpMetrics) RecordPlanStep(_ string, _ PlanStatus)                    {}
 func (n *NoOpMetrics) RecordPass(_ int)                                         {}
+func (n *NoOpMetrics) RecordDroppedEvent(_ string)                              {}
 func (n *NoOpMetrics) GetSnapshot() MetricsSnapshot                             { return MetricsSnapshot{} }
 func (n *NoOpMetrics) Reset()                                                   {}
 
@@ -75,6 +79,7 @@ type InMemoryMetrics struct {
 	contextCompactions int64
 	planSteps          map[string]int64
 	totalPasses        int64
+	droppedEvents      int64
 	lastAPICallTime    time.Time
 	lastCommandTime    time.Time
 
@@ -180,6 +185,10 @@ func (m *InMemoryMetrics) RecordPass(passNumber int) {
 	atomic.AddInt64(&m.totalPasses, 1)
 }
 
+func (m *InMemoryMetrics) RecordDroppedEvent(eventType string) {
+	atomic.AddInt64(&m.droppedEvents, 1)
+}
+
 func (m *InMemoryMetrics) GetSnapshot() MetricsSnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -190,6 +199,7 @@ func (m *InMemoryMetrics) GetSnapshot() MetricsSnapshot {
 		ContextCompactions: atomic.LoadInt64(&m.contextCompactions),
 		PlanSteps:          make(map[string]int64),
 		TotalPasses:        atomic.LoadInt64(&m.totalPasses),
+		DroppedEvents:      atomic.LoadInt64(&m.droppedEvents),
 		LastAPICallTime:    m.lastAPICallTime,
 		LastCommandTime:    m.lastCommandTime,
 	}
@@ -227,6 +237,7 @@ func (m *InMemoryMetrics) Reset() {
 	atomic.StoreInt64(&m.contextCompactions, 0)
 	m.planSteps = make(map[string]int64)
 	atomic.StoreInt64(&m.totalPasses, 0)
+	atomic.StoreInt64(&m.droppedEvents, 0)
 	m.lastAPICallTime = time.Time{}
 	m.lastCommandTime = time.Time{}
 	m.apiMinTime.Store(int64(time.Hour))

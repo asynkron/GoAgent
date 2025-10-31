@@ -154,6 +154,10 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 		Field("prompt_length", len(prompt)),
 	)
 
+	r.options.Logger.Info(ctx, "Processing user prompt",
+		Field("prompt_length", len(prompt)),
+	)
+
 	r.emit(RuntimeEvent{
 		Type:    EventTypeStatus,
 		Message: fmt.Sprintf("Processing prompt with model %s…", r.options.Model),
