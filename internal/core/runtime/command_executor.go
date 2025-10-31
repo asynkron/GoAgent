@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -141,7 +143,77 @@ func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObser
 		observation.Details = runErr.Error()
 	}
 
+	// If the command failed, persist a detailed failure report for inspection.
+	if runErr != nil {
+		_ = writeFailureLog(step, stdout, stderr, runErr)
+	}
+
 	return observation, runErr
+}
+
+// writeFailureLog persists a diagnostic file under .goagent/ whenever a command
+// fails. The log captures the run string and the full, unfiltered stdout/stderr.
+// Any errors while writing the log are swallowed to avoid impacting the runtime.
+func writeFailureLog(step PlanStep, fullStdout, fullStderr []byte, runErr error) error {
+	// Resolve the base directory for logs. Prefer the step-specific Cwd when provided
+	// so test invocations and sandboxed executions keep logs local to their workspace.
+	baseDir := strings.TrimSpace(step.Command.Cwd)
+	if baseDir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			baseDir = wd
+		} else {
+			baseDir = "."
+		}
+	}
+
+	// Ensure target directory exists relative to the resolved base directory.
+	dir := filepath.Join(baseDir, ".goagent")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+
+	// Timestamped filename to avoid collisions.
+	filename := fmt.Sprintf("failure-%s.txt", time.Now().Format("20060102-150405"))
+	path := filepath.Join(dir, filename)
+
+	// Compose a human-readable report. We intentionally include unfiltered,
+	// untruncated outputs to aid debugging.
+	var b bytes.Buffer
+	_, _ = fmt.Fprintf(&b, "Timestamp: %s\n", time.Now().Format(time.RFC3339))
+	_, _ = fmt.Fprintf(&b, "Shell: %s\n", step.Command.Shell)
+	_, _ = fmt.Fprintf(&b, "Cwd: %s\n", step.Command.Cwd)
+	_, _ = fmt.Fprintf(&b, "Run: %s\n", step.Command.Run)
+	if step.Command.TimeoutSec > 0 {
+		_, _ = fmt.Fprintf(&b, "TimeoutSec: %d\n", step.Command.TimeoutSec)
+	}
+	if step.Command.FilterRegex != "" {
+		_, _ = fmt.Fprintf(&b, "FilterRegex: %s\n", step.Command.FilterRegex)
+	}
+	if step.Command.MaxBytes > 0 {
+		_, _ = fmt.Fprintf(&b, "MaxBytes: %d\n", step.Command.MaxBytes)
+	}
+	if step.Command.TailLines > 0 {
+		_, _ = fmt.Fprintf(&b, "TailLines: %d\n", step.Command.TailLines)
+	}
+	if runErr != nil {
+		_, _ = fmt.Fprintf(&b, "Error: %v\n", runErr)
+	}
+	if step.ID != "" {
+		_, _ = fmt.Fprintf(&b, "StepID: %s\n", step.ID)
+	}
+	_, _ = fmt.Fprintln(&b)
+	_, _ = fmt.Fprintln(&b, "===== STDOUT (raw) =====")
+	_, _ = b.Write(fullStdout)
+	if len(fullStdout) > 0 && fullStdout[len(fullStdout)-1] != '\n' {
+		_, _ = b.Write([]byte("\n"))
+	}
+	_, _ = fmt.Fprintln(&b, "===== STDERR (raw) =====")
+	_, _ = b.Write(fullStderr)
+	if len(fullStderr) > 0 && fullStderr[len(fullStderr)-1] != '\n' {
+		_, _ = b.Write([]byte("\n"))
+	}
+
+	return os.WriteFile(path, b.Bytes(), 0o644)
 }
 
 func (e *CommandExecutor) executeInternal(ctx context.Context, step PlanStep) (PlanObservationPayload, error) {

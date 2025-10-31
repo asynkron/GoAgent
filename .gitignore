@@ -42,3 +42,5 @@ go.work.sum
 /cmd/.openagent/
 /cmd/history.json
 /history.json
+/internal/core/runtime/.goagent/
+
