@@ -149,7 +149,7 @@ func TestCommandExecutorExecuteBuiltinApplyPatch(t *testing.T) {
 	}
 
 	executor := NewCommandExecutor()
-	if err := registerBuiltinInternalCommands(executor); err != nil {
+	if err := registerBuiltinInternalCommands(nil, executor); err != nil {
 		t.Fatalf("failed to register builtins: %v", err)
 	}
 

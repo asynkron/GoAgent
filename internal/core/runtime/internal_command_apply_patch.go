@@ -163,9 +163,12 @@ func parseApplyPatchOptions(commandLine, cwd string) (patch.FilesystemOptions, e
 	return opts, nil
 }
 
-func registerBuiltinInternalCommands(executor *CommandExecutor) error {
+func registerBuiltinInternalCommands(rt *Runtime, executor *CommandExecutor) error {
 	if executor == nil {
 		return errors.New("nil executor")
 	}
-	return executor.RegisterInternalCommand(applyPatchCommandName, newApplyPatchCommand())
+	if err := executor.RegisterInternalCommand(applyPatchCommandName, newApplyPatchCommand()); err != nil {
+		return err
+	}
+	return executor.RegisterInternalCommand(runResearchCommandName, newRunResearchCommand(rt))
 }

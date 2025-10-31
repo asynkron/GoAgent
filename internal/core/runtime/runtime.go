@@ -57,11 +57,6 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		Pass:      0,
 	}}
 
-	executor := NewCommandExecutor()
-	if err := registerBuiltinInternalCommands(executor); err != nil {
-		return nil, err
-	}
-
 	rt := &Runtime{
 		options:       options,
 		inputs:        make(chan InputEvent, options.InputBuffer),
@@ -69,11 +64,15 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		closed:        make(chan struct{}),
 		plan:          NewPlanManager(),
 		client:        client,
-		executor:      executor,
 		history:       initialHistory,
 		agentName:     "main",
 		contextBudget: ContextBudget{MaxTokens: options.MaxContextTokens, CompactWhenPercent: options.CompactWhenPercent},
 	}
+	executor := NewCommandExecutor()
+	if err := registerBuiltinInternalCommands(rt, executor); err != nil {
+		return nil, err
+	}
+	rt.executor = executor
 
 	for name, handler := range options.InternalCommands {
 		if err := rt.executor.RegisterInternalCommand(name, handler); err != nil {
@@ -262,6 +261,20 @@ apply_patch [--respect-whitespace|--ignore-whitespace]
 {"id":"step-42","command":{"shell":"openagent","cwd":"/workspace/project","run":"apply_patch\n*** Begin Patch\n*** Update File: relative/path/to/file.ext\n@@\n-old line\n+new line\n*** End Patch"}}
 '''
   The executor parses this JSON, notices the "openagent" shell, and forwards the run string to the apply_patch handler which consumes the embedded diff.
+
+### run_research
+Use this command to spawn a sub-agent to perform research. The sub-agent will run in a hands-free loop for a fixed number of turns.
+- Set the plan step's command shell to "openagent" so the runtime routes the request to the internal handler instead of the OS shell.
+- The payload sent in the plan step's "run" field must be a JSON object of the following shape:
+'''
+{"goal":"some goal","turns":20}
+'''
+- The 'goal' is the research topic for the sub-agent.
+- The 'turns' is the maximum number of passes the sub-agent will make.
+- Example plan step payload (escaped for this Go string literal):
+'''
+{"id":"step-42","command":{"shell":"openagent","cwd":"/workspace/project","run":"run_research {\"goal\":\"code review the last 2 commits in git, anything good? bad?\",\"turns\":20}"}}
+'''
 
 ## execution environment and sandbox
 You are not in a sandbox, you have full access to run any command.
