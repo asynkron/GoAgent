@@ -45,7 +45,7 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		return nil, err
 	}
 
-	client, err := NewOpenAIClient(options.APIKey, options.Model, options.ReasoningEffort, options.APIBaseURL)
+	client, err := NewOpenAIClient(options.APIKey, options.Model, options.ReasoningEffort, options.APIBaseURL, options.Logger, options.Metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func NewRuntime(options RuntimeOptions) (*Runtime, error) {
 		agentName:     "main",
 		contextBudget: ContextBudget{MaxTokens: options.MaxContextTokens, CompactWhenPercent: options.CompactWhenPercent},
 	}
-	executor := NewCommandExecutor()
+	executor := NewCommandExecutor(options.Logger, options.Metrics)
 	if err := registerBuiltinInternalCommands(rt, executor); err != nil {
 		return nil, err
 	}

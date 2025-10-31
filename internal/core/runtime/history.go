@@ -36,7 +36,12 @@ func (r *Runtime) planningHistorySnapshot() []ChatMessage {
 	if limit > 0 {
 		total, per := estimateHistoryTokenUsage(r.history)
 		if total > limit {
+			beforeLen := len(r.history)
 			compactHistory(r.history, per, total, limit)
+			afterLen := len(r.history)
+			removed := beforeLen - afterLen
+			// Note: removed might be 0 if we just summarized without removing entries
+			r.options.Metrics.RecordContextCompaction(removed, afterLen)
 		}
 	}
 

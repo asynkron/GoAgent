@@ -25,12 +25,14 @@ type OpenAIClient struct {
 	httpClient      *http.Client
 	tool            schema.ToolDefinition
 	baseURL         string
+	logger          Logger
+	metrics         Metrics
 }
 
 const defaultOpenAIBaseURL = "https://api.openai.com/v1"
 
 // NewOpenAIClient configures the client with the provided API key and model identifier.
-func NewOpenAIClient(apiKey, model, reasoningEffort, baseURL string) (*OpenAIClient, error) {
+func NewOpenAIClient(apiKey, model, reasoningEffort, baseURL string, logger Logger, metrics Metrics) (*OpenAIClient, error) {
 	if apiKey == "" {
 		return nil, errors.New("openai: API key is required")
 	}
@@ -45,6 +47,12 @@ func NewOpenAIClient(apiKey, model, reasoningEffort, baseURL string) (*OpenAICli
 	if err != nil {
 		return nil, err
 	}
+	if logger == nil {
+		logger = &NoOpLogger{}
+	}
+	if metrics == nil {
+		metrics = &NoOpMetrics{}
+	}
 	return &OpenAIClient{
 		apiKey:          apiKey,
 		model:           model,
@@ -54,6 +62,8 @@ func NewOpenAIClient(apiKey, model, reasoningEffort, baseURL string) (*OpenAICli
 		},
 		tool:    tool,
 		baseURL: baseURL,
+		logger:  logger,
+		metrics: metrics,
 	}, nil
 }
 
@@ -71,6 +81,12 @@ func (c *OpenAIClient) RequestPlan(ctx context.Context, history []ChatMessage) (
 // It maps response.output_text.delta chunks to the onDelta callback and collects
 // function_call deltas into a ToolCall to return on completion.
 func (c *OpenAIClient) RequestPlanStreamingResponses(ctx context.Context, history []ChatMessage, onDelta func(string)) (ToolCall, error) {
+	start := time.Now()
+	c.logger.Debug(ctx, "Requesting plan from OpenAI",
+		Field("model", c.model),
+		Field("history_length", len(history)),
+	)
+
 	// Optional debug streaming: set GOAGENT_DEBUG_STREAM=1 to enable verbose prints
 	debugStream := strings.TrimSpace(os.Getenv("GOAGENT_DEBUG_STREAM")) != ""
 	if debugStream {
@@ -141,6 +157,9 @@ func (c *OpenAIClient) RequestPlanStreamingResponses(ctx context.Context, histor
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
+		c.logger.Error(ctx, "Failed to build OpenAI request", err,
+			Field("url", url),
+		)
 		return ToolCall{}, fmt.Errorf("openai(responses): build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
@@ -148,12 +167,24 @@ func (c *OpenAIClient) RequestPlanStreamingResponses(ctx context.Context, histor
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		duration := time.Since(start)
+		c.metrics.RecordAPICall(duration, false)
+		c.logger.Error(ctx, "OpenAI API request failed", err,
+			Field("url", url),
+			Field("duration_ms", duration.Milliseconds()),
+		)
 		return ToolCall{}, fmt.Errorf("openai(responses): do request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		duration := time.Since(start)
+		c.metrics.RecordAPICall(duration, false)
+		c.logger.Error(ctx, "OpenAI API returned error status", fmt.Errorf("status %s: %s", resp.Status, string(msg)),
+			Field("status_code", resp.StatusCode),
+			Field("duration_ms", duration.Milliseconds()),
+		)
 		return ToolCall{}, fmt.Errorf("openai(responses): status %s: %s", resp.Status, string(msg))
 	}
 	if debugStream {
@@ -410,9 +441,20 @@ func (c *OpenAIClient) RequestPlanStreamingResponses(ctx context.Context, histor
 	}
 
 	if toolName != "" {
+		duration := time.Since(start)
+		c.metrics.RecordAPICall(duration, true)
+		c.logger.Debug(ctx, "OpenAI API request completed successfully",
+			Field("duration_ms", duration.Milliseconds()),
+			Field("tool_name", toolName),
+		)
 		return ToolCall{ID: toolID, Name: toolName, Arguments: toolArgs}, nil
 	}
 	// No tool call is valid for plain text responses
+	duration := time.Since(start)
+	c.metrics.RecordAPICall(duration, true)
+	c.logger.Debug(ctx, "OpenAI API request completed (no tool call)",
+		Field("duration_ms", duration.Milliseconds()),
+	)
 	return ToolCall{}, nil
 }
 

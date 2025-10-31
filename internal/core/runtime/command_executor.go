@@ -45,11 +45,23 @@ type InternalCommandRequest struct {
 // a registry of agent internal commands that bypass the OS shell.
 type CommandExecutor struct {
 	internal map[string]InternalCommandHandler
+	logger   Logger
+	metrics  Metrics
 }
 
 // NewCommandExecutor builds the default executor that shells out using exec.CommandContext.
-func NewCommandExecutor() *CommandExecutor {
-	return &CommandExecutor{internal: make(map[string]InternalCommandHandler)}
+func NewCommandExecutor(logger Logger, metrics Metrics) *CommandExecutor {
+	if logger == nil {
+		logger = &NoOpLogger{}
+	}
+	if metrics == nil {
+		metrics = &NoOpMetrics{}
+	}
+	return &CommandExecutor{
+		internal: make(map[string]InternalCommandHandler),
+		logger:   logger,
+		metrics:  metrics,
+	}
 }
 
 // RegisterInternalCommand installs a handler for the provided command name. Names are
@@ -71,12 +83,33 @@ func (e *CommandExecutor) RegisterInternalCommand(name string, handler InternalC
 
 // Execute runs the provided command and returns stdout/stderr observations.
 func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObservationPayload, error) {
+	start := time.Now()
+	e.logger.Debug(ctx, "Executing command",
+		Field("step_id", step.ID),
+		Field("shell", step.Command.Shell),
+		Field("cwd", step.Command.Cwd),
+	)
+
 	if strings.TrimSpace(step.Command.Shell) == "" || strings.TrimSpace(step.Command.Run) == "" {
 		return PlanObservationPayload{}, fmt.Errorf("command: invalid shell or run for step %s", step.ID)
 	}
 
 	if strings.EqualFold(strings.TrimSpace(step.Command.Shell), agentShell) {
-		return e.executeInternal(ctx, step)
+		observation, err := e.executeInternal(ctx, step)
+		duration := time.Since(start)
+		e.metrics.RecordCommandExecution(step.ID, duration, err == nil)
+		if err != nil {
+			e.logger.Error(ctx, "Internal command failed", err,
+				Field("step_id", step.ID),
+				Field("duration_ms", duration.Milliseconds()),
+			)
+		} else {
+			e.logger.Debug(ctx, "Internal command completed",
+				Field("step_id", step.ID),
+				Field("duration_ms", duration.Milliseconds()),
+			)
+		}
+		return observation, err
 	}
 
 	// Derive a timeout-scoped context before building the command so the exec.Cmd
@@ -91,6 +124,11 @@ func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObser
 
 	execCmd, err := buildShellCommand(runCtx, step.Command.Shell, step.Command.Run)
 	if err != nil {
+		duration := time.Since(start)
+		e.metrics.RecordCommandExecution(step.ID, duration, false)
+		e.logger.Error(ctx, "Failed to build command", err,
+			Field("step_id", step.ID),
+		)
 		return PlanObservationPayload{}, fmt.Errorf("command: %w", err)
 	}
 	cmd := execCmd
@@ -146,6 +184,21 @@ func (e *CommandExecutor) Execute(ctx context.Context, step PlanStep) (PlanObser
 	// If the command failed, persist a detailed failure report for inspection.
 	if runErr != nil {
 		_ = writeFailureLog(step, stdout, stderr, runErr)
+	}
+
+	duration := time.Since(start)
+	e.metrics.RecordCommandExecution(step.ID, duration, runErr == nil)
+	if runErr != nil {
+		e.logger.Error(ctx, "Command execution failed", runErr,
+			Field("step_id", step.ID),
+			Field("shell", step.Command.Shell),
+			Field("duration_ms", duration.Milliseconds()),
+		)
+	} else {
+		e.logger.Debug(ctx, "Command execution completed",
+			Field("step_id", step.ID),
+			Field("duration_ms", duration.Milliseconds()),
+		)
 	}
 
 	return observation, runErr

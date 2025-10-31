@@ -52,6 +52,12 @@ func (r *Runtime) Run(ctx context.Context) error {
 }
 
 func (r *Runtime) loop(ctx context.Context) error {
+	traceID := generateTraceID()
+	ctx = WithTraceID(ctx, traceID)
+	r.options.Logger.Info(ctx, "Agent runtime started",
+		Field("agent_name", r.agentName),
+		Field("model", r.options.Model),
+	)
 	r.emit(RuntimeEvent{
 		Type:    EventTypeStatus,
 		Message: "Agent runtime started",
@@ -64,6 +70,7 @@ func (r *Runtime) loop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			r.options.Logger.Warn(ctx, "Context cancelled, shutting down runtime")
 			r.emit(RuntimeEvent{
 				Type:    EventTypeStatus,
 				Message: "Context cancelled. Shutting down runtime.",
@@ -79,6 +86,7 @@ func (r *Runtime) loop(ctx context.Context) error {
 				return nil
 			}
 			if err := r.handleInput(ctx, evt); err != nil {
+				r.options.Logger.Error(ctx, "Error handling input", err)
 				r.emit(RuntimeEvent{
 					Type:    EventTypeError,
 					Message: err.Error(),
@@ -119,6 +127,7 @@ func (r *Runtime) handleInput(ctx context.Context, evt InputEvent) error {
 func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 	prompt := strings.TrimSpace(evt.Prompt)
 	if prompt == "" {
+		r.options.Logger.Warn(ctx, "Ignoring empty prompt")
 		r.emit(RuntimeEvent{
 			Type:    EventTypeStatus,
 			Message: "Ignoring empty prompt.",
@@ -129,6 +138,7 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 	}
 
 	if !r.beginWork() {
+		r.options.Logger.Warn(ctx, "Agent is already processing another prompt")
 		r.emit(RuntimeEvent{
 			Type:    EventTypeStatus,
 			Message: "Agent is already processing another prompt.",
@@ -139,6 +149,10 @@ func (r *Runtime) handlePrompt(ctx context.Context, evt InputEvent) error {
 	defer r.endWork()
 
 	r.resetPassCount()
+
+	r.options.Logger.Info(ctx, "Processing user prompt",
+		Field("prompt_length", len(prompt)),
+	)
 
 	r.emit(RuntimeEvent{
 		Type:    EventTypeStatus,
@@ -161,6 +175,11 @@ func (r *Runtime) planExecutionLoop(ctx context.Context) {
 		}
 
 		pass := r.incrementPassCount()
+		r.options.Metrics.RecordPass(pass)
+		r.options.Logger.Info(ctx, "Starting plan execution pass",
+			Field("pass", pass),
+		)
+
 		if r.options.MaxPasses > 0 && pass > r.options.MaxPasses {
 			message := fmt.Sprintf("Maximum pass limit (%d) reached. Stopping execution.", r.options.MaxPasses)
 			r.emit(RuntimeEvent{
@@ -184,6 +203,9 @@ func (r *Runtime) planExecutionLoop(ctx context.Context) {
 
 		plan, toolCall, err := r.requestPlan(ctx)
 		if err != nil {
+			r.options.Logger.Error(ctx, "Failed to request plan from OpenAI", err,
+				Field("pass", pass),
+			)
 			r.emit(RuntimeEvent{
 				Type:    EventTypeError,
 				Message: fmt.Sprintf("Failed to contact OpenAI: %v", err),
@@ -194,6 +216,9 @@ func (r *Runtime) planExecutionLoop(ctx context.Context) {
 		}
 
 		if plan == nil {
+			r.options.Logger.Error(ctx, "Received nil plan response", nil,
+				Field("pass", pass),
+			)
 			r.emit(RuntimeEvent{
 				Type:    EventTypeError,
 				Message: "Received nil plan response.",

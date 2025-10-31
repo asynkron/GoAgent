@@ -243,6 +243,9 @@ func (r *Runtime) executePendingCommands(ctx context.Context, toolCall ToolCall)
 			Truncated: observation.Truncated,
 		}
 
+		// Record metrics for plan step status
+		r.options.Metrics.RecordPlanStep(step.ID, status)
+
 		planObservation := &PlanObservation{ObservationForLLM: &PlanObservationPayload{
 			PlanObservation: []StepObservation{stepResult},
 		}}

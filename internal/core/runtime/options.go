@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -79,6 +80,24 @@ type RuntimeOptions struct {
 	// InternalCommands registers agent scoped commands that bypass the host
 	// shell. The key is the command name, matched case-insensitively.
 	InternalCommands map[string]InternalCommandHandler
+
+	// Logger provides structured logging. If nil, a NoOpLogger is used.
+	Logger Logger
+	// Metrics collects runtime metrics. If nil, a NoOpMetrics is used.
+	Metrics Metrics
+	// LogLevel sets the minimum log level when using the default logger.
+	// Valid values: "DEBUG", "INFO", "WARN", "ERROR". Defaults to "INFO".
+	LogLevel string
+	// LogPath specifies a file path for logging. If set and Logger is nil,
+	// logs will be written to this file. If empty and Logger is nil, logging
+	// is disabled (NoOpLogger). This prevents logs from interfering with TUI.
+	LogPath string
+	// LogWriter allows specifying a custom writer for logs. If set, this takes
+	// precedence over LogPath. If both are nil and Logger is nil, logging is disabled.
+	LogWriter io.Writer
+	// EnableMetrics enables metrics collection. When true and Metrics is nil,
+	// an InMemoryMetrics instance is created automatically.
+	EnableMetrics bool
 }
 
 // setDefaults applies reasonable defaults that match the behaviour of the
@@ -139,6 +158,53 @@ func (o *RuntimeOptions) setDefaults() {
 	// Default to streaming enabled so users see responses token-by-token unless explicitly disabled.
 	// Tests that rely on non-streaming behavior should set UseStreaming: false.
 	o.UseStreaming = true
+
+	// Set up default logger if not provided
+	if o.Logger == nil {
+		var writer io.Writer
+
+		// If LogWriter is specified, use it
+		if o.LogWriter != nil {
+			writer = o.LogWriter
+		} else if strings.TrimSpace(o.LogPath) != "" {
+			// If LogPath is specified, try to open/create the log file
+			logPath := strings.TrimSpace(o.LogPath)
+			// Create directory if needed
+			dir := filepath.Dir(logPath)
+			if dir != "." && dir != "" {
+				_ = os.MkdirAll(dir, 0o755) // Ignore error, will fail on file open if dir can't be created
+			}
+			// Try to open the file for appending
+			if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+				writer = f
+			}
+			// If file open failed, silently fall back to NoOpLogger
+		}
+		// If no writer is configured, use NoOpLogger (default behavior)
+		if writer == nil {
+			o.Logger = &NoOpLogger{}
+		} else {
+			logLevel := LogLevelInfo
+			switch strings.ToUpper(strings.TrimSpace(o.LogLevel)) {
+			case "DEBUG":
+				logLevel = LogLevelDebug
+			case "INFO":
+				logLevel = LogLevelInfo
+			case "WARN":
+				logLevel = LogLevelWarn
+			case "ERROR":
+				logLevel = LogLevelError
+			}
+			o.Logger = NewStdLogger(logLevel, writer)
+		}
+	}
+
+	// Set up default metrics if enabled but not provided
+	if o.EnableMetrics && o.Metrics == nil {
+		o.Metrics = NewInMemoryMetrics()
+	} else if o.Metrics == nil {
+		o.Metrics = &NoOpMetrics{}
+	}
 }
 
 // validate performs lightweight validation of user supplied options.
