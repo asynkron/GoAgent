@@ -218,6 +218,9 @@ If order is required, use the "waitingForID" field to create dependencies betwee
 Use the "requireHumanInput" field to pause execution and request additional input from the user when necessary.
 Be concise and clear in your reasoning and plan steps.
 
+## git usage
+Do not commit or push to git. leave this to the user.
+
 ## diagrams
 Diagrams are drawn using Mermaid.js in Markdown code blocks. Always fence them.
 Always make sure to quote mermaid syntax correctly. eg.:
