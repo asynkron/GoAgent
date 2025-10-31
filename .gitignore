@@ -37,3 +37,5 @@ go.work.sum
 /history.json
 /internal/core/runtime/.goagent/
 
+/.goagent/
+

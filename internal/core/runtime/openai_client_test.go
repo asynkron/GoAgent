@@ -71,7 +71,8 @@ func TestRequestPlanUsesFunctionToolShape(t *testing.T) {
 		t.Fatalf("expected request host %s to match server host %s", requestHost, parsedURL.Host)
 	}
 
-	// Validate Responses API function tool shape (flat function entry)
+	// Validate Responses API function tool shape (nested function entry)
+	// tools should be: [{ "type": "function", "function": { name, description, parameters } }]
 	tools, ok := captured["tools"].([]any)
 	if !ok || len(tools) != 1 {
 		t.Fatalf("expected tools to contain one entry, got %T (len=%d)", captured["tools"], len(tools))
@@ -83,19 +84,35 @@ func TestRequestPlanUsesFunctionToolShape(t *testing.T) {
 	if t0["type"] != "function" {
 		t.Fatalf("expected tools[0].type=function, got %v", t0["type"])
 	}
-	if t0["name"] != schema.ToolName {
-		t.Fatalf("expected tools[0].name=%s, got %v", schema.ToolName, t0["name"])
+	fn, ok := t0["function"].(map[string]any)
+	if !ok || fn == nil {
+		t.Fatalf("expected tools[0].function to be an object, got %T", t0["function"])
 	}
-	params, ok := t0["parameters"].(map[string]any)
+	if fn["name"] != schema.ToolName {
+		t.Fatalf("expected tools[0].function.name=%s, got %v", schema.ToolName, fn["name"])
+	}
+	params, ok := fn["parameters"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected tools[0].parameters to be an object")
+		t.Fatalf("expected tools[0].function.parameters to be an object")
 	}
 	if _, ok := params["type"].(string); !ok {
 		t.Fatalf("expected parameters schema to include a type field")
 	}
 
-	// Validate tool_choice required
-	if captured["tool_choice"] != "required" {
-		t.Fatalf("expected tool_choice=required, got %v", captured["tool_choice"])
+	// Validate tool_choice object selecting our function
+	// tool_choice should be: { "type": "function", "function": { "name": ToolName } }
+	tc, ok := captured["tool_choice"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tool_choice to be an object, got %T", captured["tool_choice"])
+	}
+	if tc["type"] != "function" {
+		t.Fatalf("expected tool_choice.type=function, got %v", tc["type"])
+	}
+	tcf, ok := tc["function"].(map[string]any)
+	if !ok || tcf == nil {
+		t.Fatalf("expected tool_choice.function to be an object, got %T", tc["function"])
+	}
+	if tcf["name"] != schema.ToolName {
+		t.Fatalf("expected tool_choice.function.name=%s, got %v", schema.ToolName, tcf["name"])
 	}
 }
