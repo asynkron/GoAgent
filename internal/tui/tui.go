@@ -323,16 +323,16 @@ func (m *model) renderPlan() string {
 		switch status {
 		case string(runtimepkg.PlanCompleted):
 			// Completed: green circle
-			box, color = "🟢", "70"
+			box, color = "⬤ ", "70"
 		case string(runtimepkg.PlanFailed):
 			// Failed: red circle
-			box, color = "🔴", "196"
+			box, color = "⬤ ", "196"
 		case "executing":
 			// Running: yellow circle
-			box, color = "🟡", "214"
+			box, color = "⬤ ", "214"
 		default:
 			// Pending/Waiting/Ready: white circle
-			box, color = "⚪", "250"
+			box, color = "⬤ ", "250"
 			if len(step.WaitingForID) > 0 {
 				// Waiting on dependencies, render dimmer
 				color = "244"
