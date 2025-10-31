@@ -42,7 +42,7 @@ func TestCommandFailureLogging(t *testing.T) {
 		},
 	}
 
-	exec := NewCommandExecutor()
+	exec := NewCommandExecutor(nil, nil)
 
 	// Execute and expect an error.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

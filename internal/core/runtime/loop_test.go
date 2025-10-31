@@ -140,7 +140,7 @@ func TestPlanExecutionLoopPausesForHumanInput(t *testing.T) {
 		"data: [DONE]\n\n"
 	transport := &stubTransport{body: []byte(sse), statusCode: http.StatusOK}
 
-	client, err := NewOpenAIClient("test-key", "gpt-4o", "", "")
+	client, err := NewOpenAIClient("test-key", "gpt-4o", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestPlanExecutionLoopPausesForHumanInput(t *testing.T) {
 		closed:    make(chan struct{}),
 		plan:      NewPlanManager(),
 		client:    client,
-		executor:  NewCommandExecutor(),
+		executor:  NewCommandExecutor(nil, nil),
 		history:   []ChatMessage{{Role: RoleSystem, Content: "system"}},
 		agentName: "main",
 	}
@@ -226,7 +226,7 @@ func TestPlanExecutionLoopHandsFreeCompletes(t *testing.T) {
 		"data: [DONE]\n\n"
 	transport := &stubTransport{body: []byte(sse), statusCode: http.StatusOK}
 
-	client, err := NewOpenAIClient("test-key", "gpt-4o", "", "")
+	client, err := NewOpenAIClient("test-key", "gpt-4o", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestPlanExecutionLoopHandsFreeCompletes(t *testing.T) {
 		closed:    make(chan struct{}),
 		plan:      NewPlanManager(),
 		client:    client,
-		executor:  NewCommandExecutor(),
+		executor:  NewCommandExecutor(nil, nil),
 		history:   []ChatMessage{{Role: RoleSystem, Content: "system"}},
 		agentName: "main",
 	}
@@ -323,13 +323,13 @@ func TestPlanExecutionLoopHandsFreeStopsAtPassLimit(t *testing.T) {
 		"data: [DONE]\n\n"
 	transport := &stubTransport{body: []byte(sse), statusCode: http.StatusOK}
 
-	client, err := NewOpenAIClient("test-key", "gpt-4o", "", "")
+	client, err := NewOpenAIClient("test-key", "gpt-4o", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create client: %v", err)
 	}
 	client.httpClient = &http.Client{Transport: transport}
 
-	executor := NewCommandExecutor()
+	executor := NewCommandExecutor(nil, nil)
 	if err := executor.RegisterInternalCommand("noop", func(_ context.Context, _ InternalCommandRequest) (PlanObservationPayload, error) {
 		return PlanObservationPayload{Summary: "noop", ExitCode: &zero}, nil
 	}); err != nil {

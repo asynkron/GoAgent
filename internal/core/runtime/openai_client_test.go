@@ -51,7 +51,7 @@ func TestRequestPlanUsesFunctionToolShape(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewOpenAIClient("test-key", "test-model", "", server.URL)
+	client, err := NewOpenAIClient("test-key", "test-model", "", server.URL, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected client error: %v", err)
 	}

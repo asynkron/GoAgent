@@ -104,7 +104,7 @@ func TestEnforceObservationLimit(t *testing.T) {
 func TestCommandExecutorExecuteInternal(t *testing.T) {
 	t.Parallel()
 
-	executor := NewCommandExecutor()
+	executor := NewCommandExecutor(nil, nil)
 	if err := executor.RegisterInternalCommand("beep", func(_ context.Context, req InternalCommandRequest) (PlanObservationPayload, error) {
 		if req.Name != "beep" {
 			return PlanObservationPayload{}, fmt.Errorf("unexpected name %q", req.Name)
@@ -148,7 +148,7 @@ func TestCommandExecutorExecuteBuiltinApplyPatch(t *testing.T) {
 		t.Fatalf("failed to seed file: %v", err)
 	}
 
-	executor := NewCommandExecutor()
+	executor := NewCommandExecutor(nil, nil)
 	if err := registerBuiltinInternalCommands(nil, executor); err != nil {
 		t.Fatalf("failed to register builtins: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestCommandExecutorExecuteBuiltinApplyPatch(t *testing.T) {
 func TestCommandExecutorExecuteInternalUnknown(t *testing.T) {
 	t.Parallel()
 
-	executor := NewCommandExecutor()
+	executor := NewCommandExecutor(nil, nil)
 	step := PlanStep{ID: "step-1", Command: CommandDraft{Shell: agentShell, Run: "noop"}}
 	_, err := executor.Execute(context.Background(), step)
 	if err == nil || !strings.Contains(err.Error(), "unknown internal command") {

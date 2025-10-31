@@ -46,7 +46,7 @@ func TestExecutePendingCommands_AppendsSingleToolMessage(t *testing.T) {
 
 	rt := &Runtime{
 		plan:      NewPlanManager(),
-		executor:  NewCommandExecutor(),
+		executor:  NewCommandExecutor(nil, nil),
 		outputs:   make(chan RuntimeEvent, 10),
 		closed:    make(chan struct{}),
 		history:   []ChatMessage{},
@@ -106,7 +106,7 @@ func TestExecutePendingCommands_FailureStillRecordsSingleToolMessage(t *testing.
 
 	rt := &Runtime{
 		plan:      NewPlanManager(),
-		executor:  NewCommandExecutor(),
+		executor:  NewCommandExecutor(nil, nil),
 		outputs:   make(chan RuntimeEvent, 10),
 		closed:    make(chan struct{}),
 		history:   []ChatMessage{},
@@ -182,7 +182,7 @@ func TestExecutePendingCommands_RunsReadyStepsInParallel(t *testing.T) {
 
 	rt := &Runtime{
 		plan:      NewPlanManager(),
-		executor:  NewCommandExecutor(),
+		executor:  NewCommandExecutor(nil, nil),
 		outputs:   make(chan RuntimeEvent, 10),
 		closed:    make(chan struct{}),
 		history:   []ChatMessage{},
